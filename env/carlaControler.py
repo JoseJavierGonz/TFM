@@ -47,10 +47,7 @@ class CarlaControler():
             time.sleep(10)
 
 
-        except carla.libcarla.OSError as e:
-            print(f"Connection error: Cannot connect to CARLA server. Is it running? {e}")
-            self.client = None
-            self.world = None
+
         except Exception as e:
             print(f"Error initializing CARLA controller: {e}")
             self.client = None
