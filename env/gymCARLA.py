@@ -9,6 +9,9 @@ from carlaControler import CarlaControler
 class envCARLA(gym.Env):
     """Class to create a gym env, where implement the steps, rewards and so on"""
     def __init__(self):
+
+        self.current_step = 0
+        self.max_steps = 1000 
         self.action_space =  [
             spaces.Box(low=np.array([0.0, -1.0, 0.0]), high=np.array([1.0, 1.0, 1.0]), dtype=np.float32),
             spaces.Box(low=np.array([0.0, -1.0, 0.0]), high=np.array([1.0, 1.0, 1.0]), dtype=np.float32) 
@@ -77,8 +80,12 @@ class envCARLA(gym.Env):
             move = carla.VehicleControl(throttle, steer, brake)
             vehicle.apply_control(move)
             i += 1
+        self.CARLA.tick()
+        time.sleep(0.05)
         
         observations = self.__get_obs()
+        rewards, dones = self.__calculate_rewards(observations)
+        self.current_step += 1
 
 
 
@@ -136,3 +143,38 @@ class envCARLA(gym.Env):
 
     
         
+    def __calculate_rewards(self, observations):
+        rewards = []
+        dones = []
+        factor = 0.1
+        max_speed = 8.5
+        for i, agent in enumerate(self.__agent):
+            done = False
+            reward = 0
+
+            vehicle_state = observations[i]['vehicle_state']
+            velocity = np.linalg.norm(vehicle_state[:3])
+            lateral_distance = abs(vehicle_state[7])
+            angular_diff = abs(vehicle_state[8])
+            #recompensa por velociad alta(mirar documentacion de si puedo obtener la velocidad maxima del carril para actualizar max_speed)
+            speed_error = abs(velocity - max_speed)
+            reward += (max_speed - speed_error) * factor
+            #recompensa negativa cuanto mas distancia lateral al centro del carril tenga y mas desviacion del mismo
+            reward -= lateral_distance * 1.5 + angular_diff * 0.05
+
+
+            if self.CARLA.collision_occurs[agent]:
+                reward -= 100
+                done = True
+            
+            if lateral_distance > 2:
+                reward -= 50
+                done = True
+                
+            if self.current_step >= self.max_steps:
+                done = True
+            
+            rewards.append(reward)
+            dones.append(done)
+        
+        return rewards, dones
