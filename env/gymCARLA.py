@@ -9,7 +9,6 @@ from carlaControler import CarlaControler
 class envCARLA(gym.Env):
     """Class to create a gym env, where implement the steps, rewards and so on"""
     def __init__(self):
-
         self.current_step = 0
         self.max_steps = 1000 
         self.action_space =  [
@@ -48,38 +47,32 @@ class envCARLA(gym.Env):
         ]
 
         self.__agent=[]
+        self.agent_id=[]
         self.CARLA = CarlaControler()
 
-        for vehicle in self.CARLA.vehicles_marl_list:
+        for i, vehicle in enumerate(self.CARLA.vehicles_marl_list):
             self.__agent.append(vehicle)
+            self.agent_id.append(f"agent_{i}")
 
 
 
 
-# RECOMPENSA POR VELOCIDAD E IR DENTRO DEL CARRIL 
     def step(self, action):
-        cars=[]
-
-        for i in range(len(action)):
-            cars.append(action[i])
-        i=0
-        for vehicle in self.__agent:
-            car = cars[i]
-            throttle = float(car[0])
+        for i, vehicle in enumerate(self.__agent):
+            throttle = float(action[i][0])
             if throttle > 1.0:
                 throttle = 1.0
 
-            steer = float(car[1])
+            steer = float(action[i][1])
             if abs(steer) > 1.0:
                 steer = 1.0 if steer > 0 else -1.0
 
-            brake = float(car[2])
+            brake = float(action[i][2])
             if brake > 1.0:
                 brake = 1.0
 
             move = carla.VehicleControl(throttle, steer, brake)
             vehicle.apply_control(move)
-            i += 1
         self.CARLA.tick()
         time.sleep(0.05)
         
@@ -87,12 +80,15 @@ class envCARLA(gym.Env):
         rewards, dones = self.__calculate_rewards(observations)
         self.current_step += 1
 
+        return observations, rewards, dones, {}
+
 
 
 
     def __get_obs(self):
-        observation = []
-        for agent in self.__agent:
+        observation = {}
+        for i, agent in enumerate(self.__agent):
+            agent_id = self.agent_id[i]
             velocity = agent.get_velocity()
             acceleration = agent.get_acceleration()
 
@@ -135,7 +131,7 @@ class envCARLA(gym.Env):
                 "lidar": lidar_data
             }
             
-            observation.append(obs)
+            observation[agent_id] = obs
 
 
 
@@ -144,15 +140,16 @@ class envCARLA(gym.Env):
     
         
     def __calculate_rewards(self, observations):
-        rewards = []
-        dones = []
+        rewards = {}
+        dones = {}
         factor = 0.1
         max_speed = 8.5
         for i, agent in enumerate(self.__agent):
+            agent_id = self.agent_id[i]
             done = False
             reward = 0
 
-            vehicle_state = observations[i]['vehicle_state']
+            vehicle_state = observations[agent_id]['vehicle_state']
             velocity = np.linalg.norm(vehicle_state[:3])
             lateral_distance = abs(vehicle_state[7])
             angular_diff = abs(vehicle_state[8])
@@ -174,7 +171,25 @@ class envCARLA(gym.Env):
             if self.current_step >= self.max_steps:
                 done = True
             
-            rewards.append(reward)
-            dones.append(done)
+            rewards[agent_id] = reward
+            dones[agent_id] = done
         
+        dones["__all__"] = all(dones.values())
         return rewards, dones
+    
+
+    def reset(self):
+        self.current_step = 0
+
+        for agent in self.__agent:
+            self.CARLA.reset_collision(agent)
+            if agent in self.CARLA.sensors_data:
+                self.CARLA.sensors_data[agent] = {'camera_data': None, 'lidar_data': None}
+
+        self.CARLA.world.tick()
+        time.sleep(0.1)
+
+        return self.__get_obs()
+    
+    def close(self):
+        self.CARLA.destroy_actors()
