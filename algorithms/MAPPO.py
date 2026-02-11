@@ -12,13 +12,13 @@ class MAPPO:
         self.actors = [Actor_network(space_obs, space_act) for _ in range(num_agents)]
         self.critic = Critic_Actor(space_obs * num_agents)  
 
-        self.actors_op = [Adam(actor.parameters(), lr=3e-4) for actor in self.actors]
-        self.critic_op = Adam(self.critic.parameters(), lr=3e-4)
+        self.actors_op = [Adam(actor.parameters(), lr=1e-4) for actor in self.actors]
+        self.critic_op = Adam(self.critic.parameters(), lr=1e-4)
         self.gamma = gamma
         self.par_lambda = par_lambda
 
 
-    def politic(self, state, agent_id):
+    def politic(self, state, agent_id, expl_coef):
         if isinstance(agent_id, str):
             actor_id = self.agent_id_to_idx[agent_id]
         else:
@@ -26,9 +26,14 @@ class MAPPO:
 
         actor = self.actors[actor_id]
         mean, std = actor.forward(state)
+        std = std * expl_coef
         dist = Normal(mean, std)
+        
         action = dist.sample()
-
+        action[:, 0] = torch.clamp(action[:, 0], 0.0, 1.0) 
+        action[:, 1] = torch.clamp(action[:, 1], -1.0, 1.0)  
+        action[:, 2] = torch.clamp(action[:, 2], 0.0, 1.0) 
+        
         prob = dist.log_prob(action).sum()
 
         return action, prob
@@ -55,7 +60,9 @@ class MAPPO:
             advantages.insert(0, gae)
 
         advantages = torch.tensor(advantages, dtype=torch.float32)
-        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-7)
+        adv_mean = advantages.mean()
+        adv_std = advantages.std()
+        advantages = (advantages - adv_mean) / (adv_std + 1e-7)
 
         for epoch in range(10):
             for agent_idx, (agent_id, actor) in enumerate(zip(buffer.actions.keys(), self.actors)):
@@ -74,12 +81,14 @@ class MAPPO:
                 ratio = torch.exp(new_log_probs - old_log_probs_tensor)
 
                 reinforce = ratio * advantages
-                clipping = torch.clamp(ratio, 0.8, 1.2) * advantages
+                clipping = torch.clamp(ratio, 0.7, 1.3) * advantages
                 actor_loss = -torch.min(reinforce, clipping).mean()
 
-                self.actor_op[agent_idx].zero_grad()
+                self.actors_op[agent_idx].zero_grad()
                 actor_loss.backward()
-                self.actor_op[agent_idx].step()
+            
+                torch.nn.utils.clip_grad_norm_(actor.parameters(), max_norm=1.0)
+                self.actors_op[agent_idx].step()
             
             global_state_tensor = torch.stack([torch.tensor(gs, dtype=torch.float32) for gs in buffer.global_states])
             predicted_values = self.critic(global_state_tensor).squeeze()
@@ -91,6 +100,7 @@ class MAPPO:
             
             self.critic_op.zero_grad()
             critic_loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.critic.parameters(), max_norm=1.0)
             self.critic_op.step()
 
 
