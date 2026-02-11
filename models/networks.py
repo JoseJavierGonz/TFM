@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import numpy as np
 
 class Actor_network(nn.Module):
     def __init__(self, state_dim, action_dim):
@@ -12,15 +13,26 @@ class Actor_network(nn.Module):
         )
 
         self.mean_layer = nn.Linear(128, action_dim)
+        #Inicializar bias para tender al movimiento al principio
+        with torch.no_grad():
+            self.mean_layer.bias[0] = 2.0   
+            self.mean_layer.bias[1] = 0.0  
+            self.mean_layer.bias[2] = -4.0 
 
         self.std_layer = nn.Linear(128, action_dim)
 
     def forward(self, state):
         first_layers = self.net(state)
         mean = self.mean_layer(first_layers)
+        throttle = torch.sigmoid(mean[:, 0:1])
+        steer = torch.tanh(mean[:, 1:2])
+        brake = torch.sigmoid(mean[:, 2:3])
+        mean = torch.cat([throttle, steer, brake], dim=1)
         log_std = self.std_layer(first_layers)
-        std = torch.exp(log_std)
+        std = torch.sigmoid(log_std) * 0.5 + 0.1  # std ∈ [0.1, 0.5]
+        
         return mean, std
+    
     
 
 
