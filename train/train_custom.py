@@ -53,8 +53,8 @@ for episode in range(num_episodes):
             actions_dict[agent_id] = action
             log_probs_dict[agent_id] = log_prob
         
-        global_state = torch.cat([states_dict[f"agent_{i}"] for i in range(num_agents)], dim=1)
-        value = mappo.critic_evaluation(global_state)
+        global_state = torch.cat([states_dict[f"agent_{i}"].detach() for i in range(num_agents)], dim=1)
+        value = mappo.critic_evaluation(global_state).detach()
         
         actions_list = [actions_dict[f"agent_{i}"].squeeze(0).detach().numpy() for i in range(num_agents)]
         next_obs, rewards_dict, dones_dict, _ = env.step(actions_list)
