@@ -115,16 +115,28 @@ class envCARLA(gym.Env):
 
             angular_diff = (vehicle_angle - angle_center + 180) % 360 - 180
 
+            wp = waypoint
             goal_location = self.goal_positions[agent_id].location
-            dist_to_goal = vehicle_location.distance(goal_location)
+            route = 0
+            for _ in range(100):
+                next_wp = wp.next(2.0)
+                if not next_wp:
+                    break
+                wp = next_wp[0]
+                route +=2
+                if wp.transform.location.distance(goal_location) < 5.0:
+                    route += wp.transform.location.distance(goal_location)
+                    break
+            dist_to_goal = route
 
 
-            vehicle_state = np.array([velocity.x, velocity.y, velocity.z, #Velocidad
-                                    acceleration.x, acceleration.y, acceleration.z, #Aceleración
-                                    transform.rotation.yaw, #Orientacion
-                                    lateral_distance, #desviacion lateral
-                                    angular_diff, #desviacion angular
-                                    dist_to_goal],
+
+            vehicle_state = np.array([velocity.x/10, velocity.y/10, velocity.z/10, #Velocidad
+                                    acceleration.x/2, acceleration.y/2, acceleration.z/2, #Aceleración
+                                    transform.rotation.yaw/180, #Orientacion
+                                    lateral_distance/2, #desviacion lateral
+                                    angular_diff/180, #desviacion angular
+                                    dist_to_goal/400], #distancia al destino fijado
                                     dtype=np.float32) 
             
 
@@ -154,48 +166,64 @@ class envCARLA(gym.Env):
     def __calculate_rewards(self, observations, actions):
         rewards = {}
         dones = {}
-        factor = 0.1
-        max_speed = 8.5
+        factor = 0.3
+        max_speed = 10.0
         for i, agent in enumerate(self.__agent):
             agent_id = self.agent_id[i]
             done = False
             reward = 0
 
+            throttle = float(actions[i][0])
+            steer = float(actions[i][1])
+            brake = float(actions[i][2])
+
             vehicle_state = observations[agent_id]['vehicle_state']
-            dist_to_goal = vehicle_state[9]
-            velocity = np.linalg.norm(vehicle_state[:3])
-            lateral_distance = abs(vehicle_state[7])
-            angular_diff = abs(vehicle_state[8])
+            dist_to_goal = vehicle_state[9]*400
+            velocity = np.linalg.norm(vehicle_state[:3])*10
+            lateral_distance = abs(vehicle_state[7]*2)
+            angular_diff = abs(vehicle_state[8]*180)
             wrong_direction = 5 if angular_diff > 90 else 0
             #recompensa por velociad alta(mirar documentacion de si puedo obtener la velocidad maxima del carril para actualizar max_speed)
             speed_error = abs(velocity - max_speed)
+
+
+            #EMPEZAMOS CON LAS RECOMPENSAS
             reward += (max_speed - speed_error) * factor
-            
+          
             #penalizacion extra si velocidad es 0 (no se mueve)
-            if velocity < 0.1:  # umbral pequeño para considerar parado
-                reward -= 50.0
-            elif 0.1 < velocity <= 1:
-                reward += 5.0
-            elif 1 < velocity <= 2:
-                reward += 10
+            if velocity < 1:
+                reward -= 5.0/(velocity+0.1)
+            if 1 <= velocity <= 7:
+                reward += 5*velocity
             else:
-                reward+=20
-            reward_for_goal = -3 if self.better_distance[agent_id] < dist_to_goal else 8
+                reward += velocity
+
+            #penalizacion por alejarse del centro, recompensa por ir centrado
+            #tambien tenemos en cuenta el angulo
+            reward += 1.5/(lateral_distance+0.1) if lateral_distance < 1.0 else -lateral_distance*2
+            reward -= angular_diff * 0.05 + wrong_direction
+
+            #recompensa por acercarnos al objetivo
+            reward += -3 if self.better_distance[agent_id] <= dist_to_goal else 8       
             self.better_distance[agent_id] = min(self.better_distance[agent_id], dist_to_goal)
-            #recompensa negativa cuanto mas distancia lateral al centro del carril tenga y mas desviacion del mismo
-            reward_lat = 3.0 if lateral_distance < 1.0 else 0
-            reward -= lateral_distance * 1.5 + angular_diff * 0.05 + wrong_direction + reward_for_goal
-            reward += reward_lat
+            
+            #RECOMPENSAS Y PENALIZACIONES EXTRA
+            #muy cerca de la meta
             if dist_to_goal < 5.0:
                 reward += 200
                 done = True
+            #colision
             if self.CARLA.collision_occurs[agent]:
                 reward -= 50
                 done = True
-            
+            #muy alejados del carril
             if lateral_distance > 4:
                 reward -= 20
                 done = True
+
+            #evitar que pise freno y acelerador a la vez
+            # if brake > 0.1 and throttle > 0.1:
+            #     reward -=10
                 
             if self.current_step >= self.max_steps:
                 done = True
@@ -236,6 +264,12 @@ class envCARLA(gym.Env):
             
             agent.set_target_velocity(carla.Vector3D(0, 0, 0))
 
+        dead_npcs = [v for v in self.CARLA.vehicles_npcs_list if not v.is_alive]
+        for npc in dead_npcs:
+            try:
+                npc.destroy()
+            except:
+                pass
         
         self.CARLA.vehicles_npcs_list = [v for v in self.CARLA.vehicles_npcs_list if v.is_alive]
         if len(self.CARLA.vehicles_npcs_list) < 5:

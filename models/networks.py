@@ -17,7 +17,7 @@ class Actor_network(nn.Module):
         with torch.no_grad():
             self.mean_layer.bias[0] = 2.0   
             self.mean_layer.bias[1] = 0.0  
-            self.mean_layer.bias[2] = -4.0 
+            self.mean_layer.bias[2] = -2.0 
 
         self.std_layer = nn.Linear(128, action_dim)
 
@@ -29,7 +29,7 @@ class Actor_network(nn.Module):
         brake = torch.sigmoid(mean[:, 2:3])
         mean = torch.cat([throttle, steer, brake], dim=1)
         log_std = self.std_layer(first_layers)
-        std = torch.sigmoid(log_std) * 0.5 + 0.1  # std ∈ [0.1, 0.5]
+        std = torch.sigmoid(log_std) * 0.6 + 0.1  # std ∈ [0.1, 0.5]
         
         return mean, std
     

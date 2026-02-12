@@ -34,7 +34,7 @@ class MAPPO:
         action[:, 1] = torch.clamp(action[:, 1], -1.0, 1.0)  
         action[:, 2] = torch.clamp(action[:, 2], 0.0, 1.0) 
         
-        prob = dist.log_prob(action).sum()
+        prob = dist.log_prob(action).sum(dim=-1)
 
         return action, prob
     
@@ -134,7 +134,7 @@ class BufferExp:
             self.dones[agent_id].append(dones_dict[agent_id])
         
         self.global_states.append(global_state)
-        self.critic_values.append(value)
+        self.critic_values.append(value.item())
 
     def clear_buffer(self):
         self.__init__()

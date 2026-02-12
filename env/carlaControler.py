@@ -328,6 +328,11 @@ class CarlaControler():
     def destroy_actors(self):
         """Destructor"""
         print("WARNING: destroy_actors() called!")
+        for actor, sensors in self.sensors.items():
+            for sensor in sensors.values():
+                if sensor.is_alive:
+                    sensor.stop()
+                    sensor.destroy()
         for actor in self.vehicles_npcs_list + self.vehicles_marl_list + self.people_list :
             try:
                 if actor.is_alive:
