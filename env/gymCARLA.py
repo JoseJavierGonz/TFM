@@ -12,10 +12,10 @@ class envCARLA(gym.Env):
     """Class to create a gym env, where implement the steps, rewards and so on"""
     def __init__(self):
         self.current_step = 0
-        self.max_steps = 1000 
+        self.max_steps = 1050 
         self.action_space =  [
-            spaces.Box(low=np.array([0.0, -1.0, 0.0]), high=np.array([1.0, 1.0, 1.0]), dtype=np.float32),
-            spaces.Box(low=np.array([0.0, -1.0, 0.0]), high=np.array([1.0, 1.0, 1.0]), dtype=np.float32) 
+            spaces.Box(low=np.array([-1.0, -1.0]), high=np.array([1.0, 1.0]), dtype=np.float32),
+            spaces.Box(low=np.array([-1.0, -1.0]), high=np.array([1.0, 1.0]), dtype=np.float32) 
         ]
         vehicle_obs_space = spaces.Box(
             low = np.array([-np.inf]*10),
@@ -53,39 +53,42 @@ class envCARLA(gym.Env):
         self.CARLA = CarlaControler()
         self.position_change = {}
         self.goal_positions = {}
+        self.planner = {}
+        self.lane_width = 1
         self.better_distance = {}
 
         for i, vehicle in enumerate(self.CARLA.vehicles_marl_list):
             self.__agent.append(vehicle)
             agent_id = f"agent_{i}"
             self.agent_id.append(agent_id)
+            self.planner[agent_id] = None
             self.better_distance[agent_id] = np.inf
 
 
 
 
-    def step(self, action):
-        if not hasattr(self, '_step_counter'):
-            self._step_counter = 0
-        
+    def step(self, action): #vamos a bajar el espacio de acciones a 2 ya que freno y acelerador juntos resulta confuso para la red   
         for i, vehicle in enumerate(self.__agent):
             throttle = float(action[i][0])
             steer = float(action[i][1])
-            brake = float(action[i][2])
-            
-            #imprimir acciones cada 100 pasos
-            if self._step_counter % 100 == 0:
-                agent_id = self.agent_id[i]
-                print(f"Action {agent_id}: throttle={throttle:.3f}, steer={steer:.3f}, brake={brake:.3f}")
+
+            if throttle > 0:
+                brake = 0.0
+            else:
+                brake = abs(throttle)
+                throttle = 0.0 
+
+            if self.current_step % 100 == 0:
+                print(f"agente {i} --> thorttle: {throttle}, steer: {steer}, brake: {brake}")      
 
             move = carla.VehicleControl(throttle, steer, brake)
             vehicle.apply_control(move)
         
-        self._step_counter += 1
         self.CARLA.tick()
         
         observations = self.__get_obs()
-        rewards, dones = self.__calculate_rewards(observations, action)
+        self._last_obs = observations  # Guardar para logging en próximo step
+        rewards, dones = self.__calculate_rewards(observations)
         self.current_step += 1
 
         return observations, rewards, dones, {}
@@ -98,16 +101,65 @@ class envCARLA(gym.Env):
         for i, agent in enumerate(self.__agent):
             agent_id = self.agent_id[i]
             velocity = agent.get_velocity()
-            acceleration = agent.get_acceleration()
+            #acceleration = agent.get_acceleration()
 
             transform = agent.get_transform()
             vehicle_location = transform.location
             vehicle_angle = transform.rotation.yaw
+
+
+            bearing_forward = 0
+            bearing_right = 0
+            curvature = 0
+            dist_to_next = 0
+
+            if self.planner[agent_id] and len(self.planner[agent_id]) > 0:
+                route = self.planner[agent_id]
+                
+                min_dist = float('inf')
+                closest_idx = 0
+                closest_wp = route[0][0]
+
+                for idx, (wp, _) in enumerate(route):
+                    dist = vehicle_location.distance(wp.transform.location)
+                    if dist < min_dist:
+                        min_dist = dist
+                        closest_idx = idx
+                        closest_wp = wp
+                
+                waypoint = closest_wp
+
+                if closest_idx < len(route) - 5:
+                    next_wp = route[closest_idx + 1][0]  
+                    dist_to_next = vehicle_location.distance(next_wp.transform.location)
+                    vector_to_next = next_wp.transform.location - vehicle_location
+                    vehicle_forward = np.array([np.cos(np.radians(vehicle_angle)), 
+                                                np.sin(np.radians(vehicle_angle))])
+                    vehicle_right = np.array([np.sin(np.radians(vehicle_angle)), 
+                                            -np.cos(np.radians(vehicle_angle))])
+
+                    bearing_forward = (vector_to_next.x * vehicle_forward[0] + 
+                                    vector_to_next.y * vehicle_forward[1]) / (dist_to_next + 0.1)
+                    bearing_right = (vector_to_next.x * vehicle_right[0] + 
+                                    vector_to_next.y * vehicle_right[1]) / (dist_to_next + 0.1)
+                    
+                    curvature = (next_wp.transform.rotation.yaw - closest_wp.transform.rotation.yaw + 180) % 360 - 180.0
+
+                if closest_idx < len(route) - 1:
+                    dist_to_goal = sum(
+                        route[j][0].transform.location.distance(route[j+1][0].transform.location)
+                        for j in range(closest_idx, len(route)-1)
+                    )
+                    dist_to_goal += min_dist
+                else:
+                    dist_to_goal = vehicle_location.distance(route[-1][0].transform.location)
+            else:
+                dist_to_goal = 0
+                waypoint = self.CARLA.get_map().get_waypoint(vehicle_location)
             
-            waypoint = self.CARLA.get_map().get_waypoint(transform.location)
             lane_center = waypoint.transform.location
             angle_center = waypoint.transform.rotation.yaw
-
+            self.lane_width = waypoint.lane_width
             distance_x = vehicle_location.x - lane_center.x
             distance_y = vehicle_location.y - lane_center.y
             lane_direction = np.array([np.cos(np.radians(angle_center)), np.sin(np.radians(angle_center))])
@@ -115,29 +167,21 @@ class envCARLA(gym.Env):
 
             angular_diff = (vehicle_angle - angle_center + 180) % 360 - 180
 
-            wp = waypoint
-            goal_location = self.goal_positions[agent_id].location
-            route = 0
-            for _ in range(100):
-                next_wp = wp.next(2.0)
-                if not next_wp:
-                    break
-                wp = next_wp[0]
-                route +=2
-                if wp.transform.location.distance(goal_location) < 5.0:
-                    route += wp.transform.location.distance(goal_location)
-                    break
-            dist_to_goal = route
+                  
 
-
-
-            vehicle_state = np.array([velocity.x/10, velocity.y/10, velocity.z/10, #Velocidad
-                                    acceleration.x/2, acceleration.y/2, acceleration.z/2, #Aceleración
-                                    transform.rotation.yaw/180, #Orientacion
-                                    lateral_distance/2, #desviacion lateral
+            vehicle_state = np.array([velocity.x/20, velocity.y/20, velocity.z/20, #Velocidad
+                                    #acceleration.x/2, acceleration.y/2, acceleration.z/2, #Aceleración
+                                    #transform.rotation.yaw/180, #Orientacion
+                                    lateral_distance/self.lane_width, #desviacion lateral
                                     angular_diff/180, #desviacion angular
-                                    dist_to_goal/400], #distancia al destino fijado
+                                    bearing_forward,
+                                    bearing_right,
+                                    curvature/180,
+                                    np.log(dist_to_next + 1) / 4, 
+                                    np.log(dist_to_goal + 1) / 6],
                                     dtype=np.float32) 
+            
+
             
 
             # sensor_obs = self.CARLA.get_sensor_data(agent)
@@ -163,7 +207,7 @@ class envCARLA(gym.Env):
 
     
         
-    def __calculate_rewards(self, observations, actions):
+    def __calculate_rewards(self, observations):
         rewards = {}
         dones = {}
         factor = 0.3
@@ -173,64 +217,68 @@ class envCARLA(gym.Env):
             done = False
             reward = 0
 
-            throttle = float(actions[i][0])
-            steer = float(actions[i][1])
-            brake = float(actions[i][2])
-
             vehicle_state = observations[agent_id]['vehicle_state']
-            dist_to_goal = vehicle_state[9]*400
-            velocity = np.linalg.norm(vehicle_state[:3])*10
-            lateral_distance = abs(vehicle_state[7]*2)
-            angular_diff = abs(vehicle_state[8]*180)
-            wrong_direction = 5 if angular_diff > 90 else 0
+            dist_to_goal = np.exp(vehicle_state[9] * 6) -1
+            velocity = np.linalg.norm(vehicle_state[:3])*20
+            lateral_distance = abs(vehicle_state[3]*self.lane_width)
+            angular_diff = abs(vehicle_state[4]*180)
+            wrong_direction = -20 if angular_diff > 90 else 0
+
             #recompensa por velociad alta(mirar documentacion de si puedo obtener la velocidad maxima del carril para actualizar max_speed)
             speed_error = abs(velocity - max_speed)
 
 
             #EMPEZAMOS CON LAS RECOMPENSAS
+            reward = -1 #cada paso resta 1 en la recompensa
             reward += (max_speed - speed_error) * factor
           
             #penalizacion extra si velocidad es 0 (no se mueve)
-            if velocity < 1:
+            if velocity < 0.5:
                 reward -= 5.0/(velocity+0.1)
-            if 1 <= velocity <= 7:
-                reward += 5*velocity
-            else:
+            elif 0.5 <= velocity <= 4:
                 reward += velocity
+ 
 
             #penalizacion por alejarse del centro, recompensa por ir centrado
             #tambien tenemos en cuenta el angulo
-            reward += 1.5/(lateral_distance+0.1) if lateral_distance < 1.0 else -lateral_distance*2
-            reward -= angular_diff * 0.05 + wrong_direction
+            reward += 2.0/(lateral_distance+0.1) if lateral_distance < 0.8 else -lateral_distance*2
+            reward += 5 - angular_diff if angular_diff < 2 else -angular_diff * 1.5 + wrong_direction 
 
             #recompensa por acercarnos al objetivo
-            reward += -3 if self.better_distance[agent_id] <= dist_to_goal else 8       
+            reward += -10 if self.better_distance[agent_id] <= dist_to_goal else 10       
             self.better_distance[agent_id] = min(self.better_distance[agent_id], dist_to_goal)
+            
+            # DEBUG: Log componentes de recompensa cada 100 steps
+            if self.current_step % 100 == 0 and agent_id == "agent_0":
+                print(f"[REWARD] vel:{velocity:.1f} lat:{lateral_distance:.2f} ang:{angular_diff:.1f} dist:{dist_to_goal:.1f} total:{reward:.1f}")
             
             #RECOMPENSAS Y PENALIZACIONES EXTRA
             #muy cerca de la meta
             if dist_to_goal < 5.0:
                 reward += 200
                 done = True
+                print("hemos llegado a la meta")
             #colision
             if self.CARLA.collision_occurs[agent]:
                 reward -= 50
+                if agent_id == "agent_0":
+                    print(f" COLISION better_distance: {self.better_distance[agent_id]}, lateral_distance: {lateral_distance}, angular_distance: {angular_diff}")
                 done = True
             #muy alejados del carril
             if lateral_distance > 4:
                 reward -= 20
-                done = True
 
             #evitar que pise freno y acelerador a la vez
             # if brake > 0.1 and throttle > 0.1:
             #     reward -=10
                 
             if self.current_step >= self.max_steps:
+                reward -= 50
                 done = True
+                print("no conseguimos llegar en 2500 steps")
             
             rewards[agent_id] = reward
             dones[agent_id] = done
-        
         dones["__all__"] = all(dones.values())
         return rewards, dones
     
@@ -254,10 +302,19 @@ class envCARLA(gym.Env):
                 spawn_points = self.CARLA.world.get_map().get_spawn_points()
                 if spawn_points:
                     self.position_change[agent_idx] = np.random.choice(spawn_points)
-                    available_goals = [sp for sp in spawn_points if sp != self.position_change[agent_idx]]
-                    self.goal_positions[agent_id] = np.random.choice(available_goals)
+                    available_goals = [sp for sp in spawn_points if sp != self.position_change[agent_idx]
+                                                                and sp.location.distance(self.position_change[agent_idx].location) > 200]
+                    if not available_goals:
+                        available_goals = max(spawn_points, key=lambda sp: sp.location.distance(self.position_change[agent_idx].location))
+                        self.goal_positions[agent_id] = available_goals
+                    else:
+                        self.goal_positions[agent_id] = np.random.choice(available_goals)
+
                     agent.set_transform(self.position_change[agent_idx])
                     self.better_distance[agent_id] = np.inf
+                    self.planner[agent_id] = self.CARLA.route_planner.trace_route(
+                                                            self.position_change[agent_idx].location,
+                                                            self.goal_positions[agent_id].location)
                     
             else:
                 agent.set_transform(self.position_change[agent_idx])

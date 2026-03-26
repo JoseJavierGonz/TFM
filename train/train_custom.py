@@ -10,7 +10,6 @@ from env.gymCARLA import envCARLA
 
 
 gamma = 0.99
-expl_coef = 0.99
 lambda_var = 0.95
 num_episodes = 500
 num_agents = 2
@@ -18,7 +17,7 @@ rollout_steps = 1024
 best_reward = -float('inf')
 
 env = envCARLA()
-mappo = MAPPO(num_agents=num_agents, space_obs=10, space_act=3, gamma=gamma, par_lambda=lambda_var)
+mappo = MAPPO(num_agents=num_agents, space_obs=10, space_act=2, gamma=gamma, par_lambda=lambda_var)
 listener = keyboard.Listener(on_press=env.CARLA.which_camera)
 listener.start()
 for episode in range(num_episodes):
@@ -28,7 +27,7 @@ for episode in range(num_episodes):
     
     for step in range(rollout_steps):
         same_position = False if step == 0 else True
-        if step % 20 == 0:
+        if step % 100 == 0:
             if env.CARLA.camera_mode == 0:
                 spectator = env.CARLA.world.get_spectator()
                 env.CARLA.map_view(spectator)
@@ -36,12 +35,12 @@ for episode in range(num_episodes):
                 env.CARLA.follow_vehicle(env.CARLA.vehicles_marl_list[0])
             elif env.CARLA.camera_mode == 2:
                 env.CARLA.follow_vehicle(env.CARLA.vehicles_marl_list[1])
-    
-        if step % 100 == 0:
+
             print(f"  Step {step}/{rollout_steps}")
         actions_dict = {}
         log_probs_dict = {}
         states_dict = {}
+        buffer_action = {}
         
         for agent_idx in range(num_agents):
             agent_id = f"agent_{agent_idx}"
@@ -49,8 +48,9 @@ for episode in range(num_episodes):
             states_dict[agent_id] = state
             
             
-            action, log_prob = mappo.politic(state, agent_id, expl_coef)
+            action, log_prob, act_buffer = mappo.politic(state, agent_id)
             actions_dict[agent_id] = action
+            buffer_action[agent_id] = act_buffer
             log_probs_dict[agent_id] = log_prob
         
         global_state = torch.cat([states_dict[f"agent_{i}"].detach() for i in range(num_agents)], dim=1)
@@ -62,7 +62,7 @@ for episode in range(num_episodes):
         for agent_id in rewards_dict.keys():
             episode_rewards[agent_id] += rewards_dict[agent_id]
         
-        buffer.store(actions_dict, log_probs_dict, rewards_dict, states_dict, 
+        buffer.store(buffer_action, log_probs_dict, rewards_dict, states_dict, 
                      global_state, dones_dict, value)
         
         obs = next_obs
@@ -77,7 +77,6 @@ for episode in range(num_episodes):
     
     avg_reward = sum(episode_rewards.values()) / num_agents
     print(f"Episode {episode+1}/{num_episodes} - Avg Reward: {avg_reward:.2f}")
-    expl_coef = max(0.05, 0.99- episode/num_episodes)
 
     if avg_reward > best_reward:
         best_reward = avg_reward

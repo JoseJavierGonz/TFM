@@ -6,7 +6,7 @@ import random
 import numpy as np
 import pynput
 import threading
-
+from agents.navigation.global_route_planner import GlobalRoutePlanner
 
 class CarlaControler():
     """Class to connect with CARLA server, set the weather parameters, maps, cars and other simulator configurations"""
@@ -44,7 +44,7 @@ class CarlaControler():
             self.vehicles_npcs = 10 #numero de vehiculos que tendremos en el mapa
             print("Spawning vehicles...")
             
-            # Configurar Traffic Manager ANTES de spawn
+            #Configurar Traffic Manager para los npcs
             self.traffic_manager = self.client.get_trafficmanager()
             self.traffic_manager.set_global_distance_to_leading_vehicle(2.5)
             self.traffic_manager.set_synchronous_mode(True)
@@ -55,6 +55,10 @@ class CarlaControler():
             self.people = 10 #numero de personas que tendremos en el mapa
             print("Spawning pedestrians...")
             self.spawn_people()
+
+            #cargamos un planificador de rutas
+            self.route_planner = GlobalRoutePlanner(self.world.get_map(), 2.0)
+            print("Global Planner initialized")
 
             #Posiblidad de pasar un argumento según la vista que queramos tener del entorno(buscar si se podría seguir a nuestros vehiculos)
             print("Setting camera view...")
