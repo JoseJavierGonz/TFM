@@ -22,6 +22,7 @@ class CarlaControler():
         self.collision_occurs = {}
         self.camera_mode = 0
 
+
         try:
             #CONEXION CON EL SERVIDOR
             print("Connecting to CARLA server...")
@@ -32,6 +33,7 @@ class CarlaControler():
             print("Loading world...")
             self.world = self.client.load_world("Town10HD")
             self.client.set_timeout(10.0)
+            
 
             #SETEAMOS EL CLIMA
             print("Setting weather...")
@@ -231,9 +233,9 @@ class CarlaControler():
         collision = blueprint_librariy.find('sensor.other.collision')
 
         # #configurar cámara
-        # camera.set_attribute('image_size_x', '84')
-        # camera.set_attribute('image_size_y', '84')
-        # camera.set_attribute('fov', '90')
+        camera.set_attribute('image_size_x', '84')
+        camera.set_attribute('image_size_y', '84')
+        camera.set_attribute('fov', '90')
 
         # #configurar lidar
         # lidar.set_attribute('channels', '16')
@@ -241,15 +243,15 @@ class CarlaControler():
         # lidar.set_attribute('points_per_second', '28000')
         # lidar.set_attribute('rotation_frequency', '10')
         
-        # camera_transform = carla.Transform(
-        #     carla.Location(x=2.0, z=1.0), 
-        #     carla.Rotation(pitch=0.0)
-        # )
+        camera_transform = carla.Transform(
+            carla.Location(x=2.0, z=1.0), 
+            carla.Rotation(pitch=0.0)
+        )
         # lidar_transform = carla.Transform(
         #     carla.Location(x=0.0, z=2.5),
         #     carla.Rotation()
         # )
-        # camera = self.world.spawn_actor(camera, camera_transform, attach_to=actor)
+        camera = self.world.spawn_actor(camera, camera_transform, attach_to=actor)
         # lidar = self.world.spawn_actor(lidar, lidar_transform, attach_to=actor)
         collision_sensor = self.world.spawn_actor(collision, carla.Transform(), attach_to=actor)
         
@@ -264,7 +266,7 @@ class CarlaControler():
             self.sensors[actor] = {'collision':collision_sensor}
             self.sensors_data[actor] = {'camera_data': None, 'lidar_data': None}
             
-            # camera.listen(lambda data, v=actor: self.__save_camera_data(v, data))
+            camera.listen(lambda data, v=actor: self.__save_camera_data(v, data))
             # lidar.listen(lambda data, v=actor: self.__lidar_buffer(v,data))
             collision_sensor.listen(lambda data, v=actor: self.__on_collision(v, data))
 

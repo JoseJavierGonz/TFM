@@ -12,8 +12,8 @@ class MAPPO:
         self.actors = [Actor_network(space_obs, space_act) for _ in range(num_agents)]
         self.critic = Critic_Actor(space_obs * num_agents)  
 
-        self.actors_op = [Adam(actor.parameters(), lr=1e-4) for actor in self.actors]
-        self.critic_op = Adam(self.critic.parameters(), lr=1e-4)
+        self.actors_op = [Adam(actor.parameters(), lr=3e-4) for actor in self.actors]
+        self.critic_op = Adam(self.critic.parameters(), lr=3e-4)
         self.gamma = gamma
         self.par_lambda = par_lambda
 
@@ -88,6 +88,11 @@ class MAPPO:
         advantages_global = torch.tensor(advantages_global, dtype=torch.float32)
         target_values = advantages_global + torch.tensor(buffer.critic_values, dtype=torch.float32) 
 
+        losses_log = {
+            'actor_losses': {agent_id: [] for agent_id in buffer.actions.keys()},
+            'critic_losses': []
+        }
+
         for epoch in range(5):
             for agent_idx, (agent_id, actor) in enumerate(zip(buffer.actions.keys(), self.actors)):
                 state_list = buffer.states[agent_id]
@@ -110,6 +115,7 @@ class MAPPO:
                 reinforce = ratio * advantages[agent_id]
                 clipping = torch.clamp(ratio, 0.8, 1.2) * advantages[agent_id]
                 actor_loss = -torch.min(reinforce, clipping).mean() - 0.05 * entropy
+                losses_log['actor_losses'][agent_id].append(actor_loss.item())
 
                 self.actors_op[agent_idx].zero_grad()
                 actor_loss.backward()
@@ -122,13 +128,14 @@ class MAPPO:
 
             
             critic_loss = (predicted_values - target_values).pow(2).mean()
+            losses_log['critic_losses'].append(critic_loss.item())
             
             self.critic_op.zero_grad()
             critic_loss.backward()
             torch.nn.utils.clip_grad_norm_(self.critic.parameters(), max_norm=1.0)
             self.critic_op.step()
 
-
+        return losses_log
 
 
 class BufferExp:
