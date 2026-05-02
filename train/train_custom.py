@@ -6,18 +6,19 @@ import torch
 from pynput import keyboard
 from algorithms.MAPPO import MAPPO, BufferExp
 from env.gymCARLA import envCARLA
-
+from train.metrics_train import TrainingMetrics
 
 
 gamma = 0.99
 lambda_var = 0.95
-num_episodes = 500
+num_episodes = 1000
 num_agents = 2
-rollout_steps = 1024  
+rollout_steps = 2048  
 best_reward = -float('inf')
 
+metrics = TrainingMetrics()
 env = envCARLA()
-mappo = MAPPO(num_agents=num_agents, space_obs=10, space_act=2, gamma=gamma, par_lambda=lambda_var)
+mappo = MAPPO(num_agents=num_agents, space_obs=11, space_act=2, gamma=gamma, par_lambda=lambda_var)
 listener = keyboard.Listener(on_press=env.CARLA.which_camera)
 listener.start()
 for episode in range(num_episodes):
@@ -72,10 +73,16 @@ for episode in range(num_episodes):
         if agents_to_reset:
             obs = env.reset(agent_ids=agents_to_reset, same_position=same_position)
     
-    mappo.update(buffer)
+    losses = mappo.update(buffer)
     buffer.clear_buffer()
     
     avg_reward = sum(episode_rewards.values()) / num_agents
+    metrics.log_episode(
+        episode,
+        losses['actor_losses'],
+        losses['critic_losses'],
+        avg_reward
+    )
     print(f"Episode {episode+1}/{num_episodes} - Avg Reward: {avg_reward:.2f}")
 
     if avg_reward > best_reward:
