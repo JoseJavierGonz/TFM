@@ -4,6 +4,7 @@ import carla
 import time
 import random
 import numpy as np
+import cv2
 import pynput
 import threading
 from agents.navigation.global_route_planner import GlobalRoutePlanner
@@ -325,6 +326,7 @@ class CarlaControler():
             data_camera = np.reshape(data, (measure.height, measure.width, 4))
             data_camera = data_camera[:, :, :3] 
             data_camera = data_camera[:, :, [2, 1, 0]]
+            data_camera = cv2.resize(data_camera, (84, 84))
             self.sensors_data[vehicle]['camera_data'] = data_camera
         except Exception as e:
             print(f"Error processing camera data: {e}")

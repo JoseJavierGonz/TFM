@@ -6,7 +6,7 @@ from gym import spaces
 import time
 import numpy as np
 from env.carlaControler import CarlaControler
-from sensors.camera import CameraProcessor
+#from sensors.camera import CameraProcessor
 
 
 class envCARLA(gym.Env):
@@ -16,15 +16,12 @@ class envCARLA(gym.Env):
             spaces.Box(low=np.array([-1.0, -1.0]), high=np.array([1.0, 1.0]), dtype=np.float32),
             spaces.Box(low=np.array([-1.0, -1.0]), high=np.array([1.0, 1.0]), dtype=np.float32) 
         ]
-        low_v = np.array([0.0, -1.0, 0.0, 0.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, 0.0], dtype = np.float32)
-        high_v = np.array([1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,], dtype = np.float32)
-        low_resnet = np.ones(128, dtype=np.float32) * -1.0
-        high_resnet = np.ones(128, dtype=np.float32) * 1.0 
-        low_combined = np.concatenate([low_v, low_resnet])
-        high_combined = np.concatenate([high_v, high_resnet])
+        self.low_v = np.array([0.0, -1.0, 0.0, 0.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, 0.0], dtype = np.float32)
+        self.high_v = np.array([1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,], dtype = np.float32)
+
             
         vehicle_obs_space = spaces.Box(
-            low=low_v, high=high_v,
+            low=self.low_v, high=self.high_v,
             dtype=np.float32  
         )
 
@@ -43,13 +40,13 @@ class envCARLA(gym.Env):
 
         self.observation_space = [
             spaces.Dict({
-                "vehicle_state": vehicle_obs_space
-                # "camera": camera_obs,
+                "vehicle_state": vehicle_obs_space,
+                "camera": camera_obs,
                 # "lidar": lidar_obs
             }),
             spaces.Dict({
-                "vehicle_state": vehicle_obs_space
-                # "camera": camera_obs,
+                "vehicle_state": vehicle_obs_space,
+                "camera": camera_obs,
                 # "lidar": lidar_obs
             }),
         ]
@@ -112,7 +109,7 @@ class envCARLA(gym.Env):
         
         observations = self.__get_obs()
         self._last_obs = observations  # Guardar para logging en próximo step
-        rewards, dones = self.__calculate_rewards(observations)
+        rewards, dones = self.__calculate_rewards()
         self.current_step += 1
 
         return observations, rewards, dones, {}
@@ -257,33 +254,23 @@ class envCARLA(gym.Env):
                                     dtype=np.float32)
             
             vehicle_state = np.nan_to_num(vehicle_state, nan=0.0, posinf=0.0, neginf=0.0)
-
+            vehicle_state = np.clip(vehicle_state, self.low_v, self.high_v)
             
 
-            # sensor_obs = self.CARLA.get_sensor_data(agent)
-            # # lidar_data = sensor_obs['lidar_data']
-            # # if lidar_data is None:
-            # #     lidar_data = np.zeros((1000, 4), dtype=np.float32)
+            sensor_obs = self.CARLA.get_sensor_data(agent)
+            # # # lidar_data = sensor_obs['lidar_data']
+            # # # if lidar_data is None:
+            # # #     lidar_data = np.zeros((1000, 4), dtype=np.float32)
 
-            # camera_data = sensor_obs['camera_data']
-            # if camera_data is None:
-            #     camera_data = np.zeros((84, 84, 3), dtype=np.uint8)
-
-            # image_data = self.camera_processor.extract_features(camera_data)
-            # if hasattr(image_data, 'cpu'):
-            #     image_data = image_data.cpu().detach().numpy()
-            # image_data = image_data[:128]
-            # image_data = np.clip(image_data, -3, 3) / 3.0  
-            # image_data = np.nan_to_num(image_data, nan=0.0, posinf=0.0, neginf=0.0)
+            camera_obs = sensor_obs['camera_data']
+            if camera_obs is None:
+                camera_obs = np.zeros((84, 84, 3), dtype=np.uint8)
 
 
-            # combined_obs = np.concatenate([vehicle_state, image_data], dtype=np.float32)
 
-            # obs = {
-            #     "vehicle_state": combined_obs,
-            # }
             
-            observation[agent_id] = {"vehicle_state" : vehicle_state}
+            observation[agent_id] = {"vehicle_state" : vehicle_state,
+                                    "camera" : camera_obs}
 
 
 
@@ -291,7 +278,7 @@ class envCARLA(gym.Env):
 
     
         
-    def __calculate_rewards(self, observations):
+    def __calculate_rewards(self):
         rewards = {}
         dones = {}
         factor = 2
@@ -309,7 +296,7 @@ class envCARLA(gym.Env):
             angular_error = -2*(abs(self.angular_diff_rad[agent_id])/(np.pi/3))
             reward += angular_error
 
-            #recompensa por velociad alta
+            #recompensa por velociad objetivo
             speed_error = 1 -  min(1, (abs(self.velocity[agent_id] - self.velocity_target)/self.velocity_target))
 
             reward += speed_error*factor
@@ -363,7 +350,7 @@ class envCARLA(gym.Env):
             # if brake > 0.1 and throttle > 0.1:
             #     reward -=10
                 
-            if self.current_step >= self.max_steps: #no estamos usando el numero maximo de pasos de
+            if self.current_step >= self.max_steps: #no estamos usando el numero maximo de pasos de momento
                 reward -= 10
                 done = True
                 print("no conseguimos llegar en 2500 steps")
@@ -434,4 +421,3 @@ class envCARLA(gym.Env):
     
     def close(self):
         self.CARLA.destroy_actors()
-
