@@ -53,8 +53,8 @@ class envCARLA(gym.Env):
 
         self.current_step = 0
         self.max_steps = 2050
-        self.velocity_target = 15
-        self.max_speed = 20
+        self.velocity_target = 10
+        self.max_speed = 15
         self.distance = {}
         self.velocity = {}
         self.throttle = None
@@ -296,6 +296,10 @@ class envCARLA(gym.Env):
             angular_error = -2*(abs(self.angular_diff_rad[agent_id])/(np.pi/3))
             reward += angular_error
 
+            #vairaciones bruscas del volante, buscando evitar que haga S
+            steer_penalty = - (self.steer ** 2) * 0.5 
+            reward += steer_penalty
+
             #recompensa por velociad objetivo
             speed_error = 1 -  min(1, (abs(self.velocity[agent_id] - self.velocity_target)/self.velocity_target))
 
@@ -338,7 +342,7 @@ class envCARLA(gym.Env):
                 print("hemos llegado a la meta")
             #colision
             if self.CARLA.collision_occurs[agent]:
-                reward -= 20
+                reward -= 80
                 if agent_id == "agent_0":
                     print(f" COLISION better_distance: {self.better_distance[agent_id]}, lateral_distance: {self.lateral_distance}, angular_distance: {self.angular_diff_rad[agent_id]}")
                 done = True
@@ -414,7 +418,7 @@ class envCARLA(gym.Env):
                 pass
         
         self.CARLA.vehicles_npcs_list = [v for v in self.CARLA.vehicles_npcs_list if v.is_alive]
-        if len(self.CARLA.vehicles_npcs_list) < 5:
+        if len(self.CARLA.vehicles_npcs_list) < 20:
             self.CARLA.spawn_vehicle(True)
         
         return self.__get_obs()

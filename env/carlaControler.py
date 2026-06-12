@@ -44,7 +44,7 @@ class CarlaControler():
             time.sleep(5)
 
             #SETEAMOS VEHICULOS Y PERSONAS
-            self.vehicles_npcs = 10 #numero de vehiculos que tendremos en el mapa
+            self.vehicles_npcs = 20 #numero de vehiculos que tendremos en el mapa
             print("Spawning vehicles...")
             
             #Configurar Traffic Manager para los npcs
@@ -55,7 +55,7 @@ class CarlaControler():
             
             self.spawn_vehicle(False)
 
-            self.people = 10 #numero de personas que tendremos en el mapa
+            self.people = 20 #numero de personas que tendremos en el mapa
             print("Spawning pedestrians...")
             self.spawn_people()
 
