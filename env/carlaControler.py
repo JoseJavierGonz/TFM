@@ -7,7 +7,21 @@ import numpy as np
 import cv2
 import pynput
 import threading
+from queue import Queue, Empty
 from agents.navigation.global_route_planner import GlobalRoutePlanner
+
+
+# Paleta de colores para visualizar segmentación semántica de CARLA
+SEG_PALETTE = {
+    0:  (0, 0, 0),         # Unlabeled
+    4:  (220, 20, 60),     # Pedestrian (rojo)
+    6:  (157, 234, 50),    # RoadLine (verde claro)
+    7:  (128, 64, 128),    # Road (morado)
+    8:  (244, 35, 232),    # SideWalk (rosa)
+    10: (0, 0, 142),       # Vehicle (azul)
+    18: (250, 170, 30),    # TrafficLight (naranja)
+}
+
 
 class CarlaControler():
     """Class to connect with CARLA server, set the weather parameters, maps, cars and other simulator configurations"""
@@ -17,6 +31,7 @@ class CarlaControler():
         self.world = None
         self.sensors = {}
         self.sensors_data = {}
+        self.camera_queues = {}
         self.vehicles_npcs_list = []
         self.vehicles_marl_list = []
         self.people_list = []
@@ -229,13 +244,13 @@ class CarlaControler():
 
     def initialize_sensors(self, actor):
         blueprint_librariy = self.world.get_blueprint_library()
-        camera = blueprint_librariy.find('sensor.camera.rgb')
+        camera = blueprint_librariy.find('sensor.camera.semantic_segmentation')
         lidar = blueprint_librariy.find('sensor.lidar.ray_cast')
         collision = blueprint_librariy.find('sensor.other.collision')
 
         # #configurar cámara
-        camera.set_attribute('image_size_x', '84')
-        camera.set_attribute('image_size_y', '84')
+        camera.set_attribute('image_size_x', '128')
+        camera.set_attribute('image_size_y', '128')
         camera.set_attribute('fov', '90')
 
         # #configurar lidar
@@ -264,10 +279,12 @@ class CarlaControler():
             print(f"{actor} saved previously")
         else:
             #self.sensors[actor] = {'camera':camera, 'lidar':lidar, 'collision':collision_sensor}
-            self.sensors[actor] = {'collision':collision_sensor}
+            self.sensors[actor] = {'camera': camera, 'collision': collision_sensor}
             self.sensors_data[actor] = {'camera_data': None, 'lidar_data': None}
-            
-            camera.listen(lambda data, v=actor: self.__save_camera_data(v, data))
+
+            # Cola por sensor para sincronízación estricta tick<->frame
+            self.camera_queues[actor] = Queue()
+            camera.listen(self.camera_queues[actor].put)
             # lidar.listen(lambda data, v=actor: self.__lidar_buffer(v,data))
             collision_sensor.listen(lambda data, v=actor: self.__on_collision(v, data))
 
@@ -283,8 +300,19 @@ class CarlaControler():
         return self.world.get_map()
     
     def tick(self):
-        """Advance simulation by one tick"""
-        self.world.tick()
+        """Advance simulation by one tick and drain sensor queues with strict frame sync."""
+        frame = self.world.tick()
+        for vehicle, q in self.camera_queues.items():
+            try:
+                data = None
+                while True:
+                    data = q.get(timeout=2.0)
+                    if data.frame >= frame:
+                        break
+                if data is not None:
+                    self.__save_camera_data(vehicle, data)
+            except Empty:
+                print(f"[CARLA] Timeout esperando frame de cámara (frame {frame})")
     
 
     def __on_collision(self, vehicle, measure):
@@ -318,18 +346,32 @@ class CarlaControler():
             
     
     def __save_camera_data(self, vehicle, measure):
-        """Process camera data"""
-
+        """Process semantic segmentation data: extract class IDs (R channel of BGRA)."""
         try:
-            raw_data = measure.raw_data
-            data = np.frombuffer(raw_data, dtype=np.uint8)
-            data_camera = np.reshape(data, (measure.height, measure.width, 4))
-            data_camera = data_camera[:, :, :3] 
-            data_camera = data_camera[:, :, [2, 1, 0]]
-            data_camera = cv2.resize(data_camera, (84, 84))
-            self.sensors_data[vehicle]['camera_data'] = data_camera
+            raw = np.frombuffer(measure.raw_data, dtype=np.uint8)
+            raw = np.reshape(raw, (measure.height, measure.width, 4))
+            # semantic_segmentation: class ID en canal R (índice 2 en BGRA)
+            class_ids = raw[:, :, 2]
+            if class_ids.shape != (128, 128):
+                class_ids = cv2.resize(class_ids, (128, 128), interpolation=cv2.INTER_NEAREST)
+            self.sensors_data[vehicle]['camera_data'] = class_ids.astype(np.uint8)
         except Exception as e:
             print(f"Error processing camera data: {e}")
+
+    def save_seg_debug(self, vehicle, path):
+        """Guarda la última segmentación del vehículo coloreada para depuración visual."""
+        data = self.sensors_data.get(vehicle, {}).get('camera_data')
+        if data is None:
+            return False
+        H, W = data.shape
+        img = np.zeros((H, W, 3), dtype=np.uint8)
+        # default: gris oscuro para clases no listadas
+        img[:] = (40, 40, 40)
+        for k, color in SEG_PALETTE.items():
+            img[data == k] = color
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        cv2.imwrite(path, cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
+        return True
 
        
     

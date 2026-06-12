@@ -27,8 +27,8 @@ class envCARLA(gym.Env):
 
         camera_obs = spaces.Box(
             low = 0,
-            high = 255, 
-            shape = (84, 84, 3), 
+            high = 22, 
+            shape = (128, 128), 
             dtype = np.uint8)
 
         lidar_obs = spaces.Box(
@@ -57,8 +57,9 @@ class envCARLA(gym.Env):
         self.max_speed = 15
         self.distance = {}
         self.velocity = {}
-        self.throttle = None
-        self.steer = None 
+        self.throttle = {}
+        self.steer = {}
+        self.brake = {}
         self.dist_to_goal = {}
         self.closest_waypoint_idx = {}
         self.last_waypoint_idx = {}
@@ -87,22 +88,27 @@ class envCARLA(gym.Env):
 
 
 
-
+##steer, throttle por agente
     def step(self, action): #vamos a bajar el espacio de acciones a 2 ya que freno y acelerador juntos resulta confuso para la red   
         for i, vehicle in enumerate(self.__agent):
+            agent_id = self.agent_id[i]
             throttle_ = float(action[i][0])
-            self.steer = float(action[i][1])
-            self.throttle = 0.5 * (1 + throttle_)
-            if self.throttle > 0:
-                brake = 0.0
+            steer_i = float(action[i][1])
+            throttle_i = 0.5 * (1 + throttle_)
+            if throttle_i > 0:
+                brake_i = 0.0
             else:
-                brake = 1.0
-                self.throttle = 0.0 
+                brake_i = 1.0
+                throttle_i = 0.0
+
+            self.throttle[agent_id] = throttle_i
+            self.steer[agent_id] = steer_i
+            self.brake[agent_id] = brake_i
 
             if self.current_step % 100 == 0:
-                print(f"agente {i} --> thorttle: {self.throttle}, steer: {self.steer}, brake: {brake}")      
+                print(f"agente {i} --> thorttle: {throttle_i}, steer: {steer_i}, brake: {brake_i}")      
 
-            move = carla.VehicleControl(self.throttle, self.steer, brake)
+            move = carla.VehicleControl(throttle_i, steer_i, brake_i)
             vehicle.apply_control(move)
         
         self.CARLA.tick()
@@ -119,6 +125,7 @@ class envCARLA(gym.Env):
 
     def __get_obs(self):
         observation = {}
+
         for i, agent in enumerate(self.__agent):
             agent_id = self.agent_id[i]
             if i == 0:
@@ -233,10 +240,9 @@ class envCARLA(gym.Env):
 
             e1_norm = np.clip(self.angular_diff_rad[agent_id], -1.0, 1.0)
             e2_norm = np.clip(e2_raw, -1.0, 1.0)
-                  
 
-            vehicle_state = np.array([self.throttle,
-                                    self.steer,
+            vehicle_state = np.array([self.throttle.get(agent_id, 0.0),
+                                    self.steer.get(agent_id, 0.0),
                                     norm_velocity, #Velocidad
                                     #acceleration.x/2, acceleration.y/2, acceleration.z/2, #Aceleración
                                     #transform.rotation.yaw/180, #Orientacion
@@ -264,7 +270,7 @@ class envCARLA(gym.Env):
 
             camera_obs = sensor_obs['camera_data']
             if camera_obs is None:
-                camera_obs = np.zeros((84, 84, 3), dtype=np.uint8)
+                camera_obs = np.zeros((128, 128), dtype=np.uint8)
 
 
 
@@ -297,7 +303,7 @@ class envCARLA(gym.Env):
             reward += angular_error
 
             #vairaciones bruscas del volante, buscando evitar que haga S
-            steer_penalty = - (self.steer ** 2) * 0.5 
+            steer_penalty = - (self.steer.get(agent_id, 0.0) ** 2) * 0.5 
             reward += steer_penalty
 
             #recompensa por velociad objetivo
@@ -325,7 +331,7 @@ class envCARLA(gym.Env):
             if self.closest_waypoint_idx.get(agent_id, 0) > self.last_waypoint_idx.get(agent_id, 0):
                 reward += 2
                 self.last_waypoint_idx[agent_id] = self.closest_waypoint_idx[agent_id]
-            
+
             #Log componentes de recompensa cada 100 steps
             if self.current_step % 100 == 0 and agent_id == "agent_0":
                 print(f"[REWARD] vel:{self.velocity[agent_id]:.1f} lat:{self.lateral_distance[agent_id]:.2f} ang:{self.angular_diff_rad[agent_id]:.1f} dist:{self.dist_to_goal[agent_id]:.1f} total:{reward:.1f}")
@@ -342,7 +348,7 @@ class envCARLA(gym.Env):
                 print("hemos llegado a la meta")
             #colision
             if self.CARLA.collision_occurs[agent]:
-                reward -= 80
+                reward -= 20
                 if agent_id == "agent_0":
                     print(f" COLISION better_distance: {self.better_distance[agent_id]}, lateral_distance: {self.lateral_distance}, angular_distance: {self.angular_diff_rad[agent_id]}")
                 done = True

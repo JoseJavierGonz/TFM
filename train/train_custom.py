@@ -46,6 +46,13 @@ for episode in range(num_episodes):
                 env.CARLA.follow_vehicle(env.CARLA.vehicles_marl_list[1])
 
             print(f"  Step {step}/{rollout_steps}")
+
+        if step % 200 == 0:
+            for i, v in enumerate(env.CARLA.vehicles_marl_list):
+                env.CARLA.save_seg_debug(
+                    v,
+                    f"debug_cam/ep{episode:03d}_step{step:04d}_agent{i}.png"
+                )
         actions_dict = {}
         log_probs_dict = {}
         states_dict = {}
@@ -56,7 +63,7 @@ for episode in range(num_episodes):
             agent_id = f"agent_{agent_idx}"
             state = torch.tensor(obs[agent_id]["vehicle_state"], dtype=torch.float32).unsqueeze(0).to(device)
             states_dict[agent_id] = state
-            image = torch.from_numpy(obs[agent_id]["camera"]).permute(2,0,1).float()
+            image = torch.from_numpy(obs[agent_id]["camera"]).long()
             image = image.unsqueeze(0).to(device)
             images_dict[agent_id] = image
                         
@@ -69,7 +76,8 @@ for episode in range(num_episodes):
             del state, image
         
         global_state = torch.cat([states_dict[f"agent_{i}"] for i in range(num_agents)], dim=1)
-        value = mappo.critic_evaluation(global_state).detach().squeeze()
+        global_images = [images_dict[f"agent_{i}"] for i in range(num_agents)]
+        value = mappo.critic_evaluation(global_state, global_images).detach().squeeze()
         
         actions_list = [actions_dict[f"agent_{i}"].squeeze(0).detach().cpu().numpy() for i in range(num_agents)]
         next_obs, rewards_dict, dones_dict, _ = env.step(actions_list)

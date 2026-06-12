@@ -11,7 +11,7 @@ class MAPPO:
         self.agent_id_to_idx = {f"agent_{i}": i for i in range(num_agents)}
      
         self.actors = [Actor_network(space_obs, space_act).to(self.device) for _ in range(num_agents)]
-        self.critic = Critic_Actor(space_obs * num_agents).to(self.device)
+        self.critic = Critic_Actor(space_obs * num_agents, num_agents).to(self.device)
 
         self.actors_op = [Adam(actor.parameters(), lr=3e-4) for actor in self.actors]
         self.critic_op = Adam(self.critic.parameters(), lr=3e-4)
@@ -39,8 +39,8 @@ class MAPPO:
 
         return action_tensor, prob, action_to_buffer
     
-    def critic_evaluation(self, state_final):
-        return self.critic(state_final)
+    def critic_evaluation(self, state_final, images):
+        return self.critic(state_final, images)
     
 
     def update(self, buffer):
@@ -53,10 +53,12 @@ class MAPPO:
             agent_adv = []
             gae = 0
             for t in reversed(range(len_global)):
-                next_val = 0 if (t == len_global - 1 or buffer.dones[agent_id][t]) else values[t+1]
+                done_t = bool(buffer.dones[agent_id][t])
+                mask = 0.0 if done_t else 1.0
+                next_val = 0.0 if (t == len_global - 1 or done_t) else values[t+1]
                 reward = buffer.rewards[agent_id][t]
                 delta = reward + self.gamma * next_val - values[t]
-                gae = delta + self.gamma * self.par_lambda * gae
+                gae = delta + self.gamma * self.par_lambda * mask * gae
                 agent_adv.insert(0, gae)
 
             advi = torch.tensor(agent_adv, dtype=torch.float32).to(self.device)
@@ -77,58 +79,40 @@ class MAPPO:
             }
         
         global_state_tensor = torch.stack(buffer.global_states).to(self.device).detach()
+        global_images_list = [precomputed[f"agent_{i}"]["images"] for i in range(self.num_agents)]
 
         losses_log = {'actor_losses': {f"agent_{i}": [] for i in range(self.num_agents)}, 'critic_losses': []}
-
-        # micro_batch_size = 256 
-        # num_micro_batches = len_global // micro_batch_size + (1 if len_global % micro_batch_size != 0 else 0)
 
         for epoch in range(5):
             for agent_idx in range(self.num_agents):
                 agent_id = f"agent_{agent_idx}"
                 actor = self.actors[agent_idx]
                 data = precomputed[agent_id]
-                
-                self.actors_op[agent_idx].zero_grad()
-                
-                # for start in range(0, len_global, micro_batch_size):
-                #     end = start + micro_batch_size
-                    
-                #     states_b = data["states"][start:end]
-                #     images_b = data["images"][start:end]
-                #     actions_b = data["actions"][start:end]
-                #     old_probs_b = data["old_log_probs"][start:end]
-                #     adv_b = data["advantages"][start:end]
 
-                mean, std = actor(data['images'], data['states'])
+                mean, std = actor(data["images"], data["states"])
                 dist = Normal(mean, std)
-                new_probs = dist.log_prob(data['actions']).sum(dim=-1)
-                
-                ratio = torch.exp(new_probs - data['old_log_probs'])
-                reinforce = ratio * data['advantages']
-                clipping = torch.clamp(ratio, 0.8, 1.2) * data['advantages']
-                
-                actor_loss = (-torch.min(reinforce, clipping).mean() - 0.05 * dist.entropy().mean())
-                actor_loss.backward() 
+                new_probs = dist.log_prob(data["actions"]).sum(dim=-1)
 
+                ratio = torch.exp(new_probs - data["old_log_probs"])
+                reinforce = ratio * data["advantages"]
+                clipping = torch.clamp(ratio, 0.8, 1.2) * data["advantages"]
+                actor_loss = -torch.min(reinforce, clipping).mean() - 0.05 * dist.entropy().mean()
+
+                self.actors_op[agent_idx].zero_grad()
+                actor_loss.backward()
                 torch.nn.utils.clip_grad_norm_(actor.parameters(), 1.0)
                 self.actors_op[agent_idx].step()
                 losses_log['actor_losses'][agent_id].append(actor_loss.item())
 
+            predicted_v = self.critic(global_state_tensor, global_images_list).squeeze(-1)
+            critic_loss = (predicted_v - target_values).pow(2).mean()
+
             self.critic_op.zero_grad()
-            # for start in range(0, len_global, micro_batch_size):
-            #     end = start + micro_batch_size
-                
-            # global_b = global_state_tensor[start:end]
-            # target_b = target_values[start:end]
-
-            predicted_v = self.critic(global_state_tensor).squeeze(-1)
-            critic_loss = (predicted_v - target_values).pow(2).mean() 
             critic_loss.backward()
-
             torch.nn.utils.clip_grad_norm_(self.critic.parameters(), 1.0)
             self.critic_op.step()
             losses_log['critic_losses'].append(critic_loss.item())
+
         del precomputed
         torch.cuda.empty_cache()
         return losses_log
