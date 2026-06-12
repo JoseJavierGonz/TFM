@@ -80,8 +80,8 @@ class MAPPO:
 
         losses_log = {'actor_losses': {f"agent_{i}": [] for i in range(self.num_agents)}, 'critic_losses': []}
 
-        micro_batch_size = 256 
-        num_micro_batches = len_global // micro_batch_size + (1 if len_global % micro_batch_size != 0 else 0)
+        # micro_batch_size = 256 
+        # num_micro_batches = len_global // micro_batch_size + (1 if len_global % micro_batch_size != 0 else 0)
 
         for epoch in range(5):
             for agent_idx in range(self.num_agents):
@@ -91,44 +91,44 @@ class MAPPO:
                 
                 self.actors_op[agent_idx].zero_grad()
                 
-                for start in range(0, len_global, micro_batch_size):
-                    end = start + micro_batch_size
+                # for start in range(0, len_global, micro_batch_size):
+                #     end = start + micro_batch_size
                     
-                    states_b = data["states"][start:end]
-                    images_b = data["images"][start:end]
-                    actions_b = data["actions"][start:end]
-                    old_probs_b = data["old_log_probs"][start:end]
-                    adv_b = data["advantages"][start:end]
+                #     states_b = data["states"][start:end]
+                #     images_b = data["images"][start:end]
+                #     actions_b = data["actions"][start:end]
+                #     old_probs_b = data["old_log_probs"][start:end]
+                #     adv_b = data["advantages"][start:end]
 
-                    mean, std = actor(images_b, states_b)
-                    dist = Normal(mean, std)
-                    new_probs = dist.log_prob(actions_b).sum(dim=-1)
-                    
-                    ratio = torch.exp(new_probs - old_probs_b)
-                    reinforce = ratio * adv_b
-                    clipping = torch.clamp(ratio, 0.8, 1.2) * adv_b
-                    
-                    actor_loss = (-torch.min(reinforce, clipping).mean() - 0.05 * dist.entropy().mean()) / num_micro_batches
-                    actor_loss.backward() 
+                mean, std = actor(data['images'], data['states'])
+                dist = Normal(mean, std)
+                new_probs = dist.log_prob(data['actions']).sum(dim=-1)
+                
+                ratio = torch.exp(new_probs - data['old_log_probs'])
+                reinforce = ratio * data['advantages']
+                clipping = torch.clamp(ratio, 0.8, 1.2) * data['advantages']
+                
+                actor_loss = (-torch.min(reinforce, clipping).mean() - 0.05 * dist.entropy().mean())
+                actor_loss.backward() 
 
                 torch.nn.utils.clip_grad_norm_(actor.parameters(), 1.0)
                 self.actors_op[agent_idx].step()
-                losses_log['actor_losses'][agent_id].append(actor_loss.item() * num_micro_batches)
+                losses_log['actor_losses'][agent_id].append(actor_loss.item())
 
             self.critic_op.zero_grad()
-            for start in range(0, len_global, micro_batch_size):
-                end = start + micro_batch_size
+            # for start in range(0, len_global, micro_batch_size):
+            #     end = start + micro_batch_size
                 
-                global_b = global_state_tensor[start:end]
-                target_b = target_values[start:end]
+            # global_b = global_state_tensor[start:end]
+            # target_b = target_values[start:end]
 
-                predicted_v = self.critic(global_b).squeeze(-1)
-                critic_loss = (predicted_v - target_b).pow(2).mean() / num_micro_batches
-                critic_loss.backward()
+            predicted_v = self.critic(global_state_tensor).squeeze(-1)
+            critic_loss = (predicted_v - target_values).pow(2).mean() 
+            critic_loss.backward()
 
             torch.nn.utils.clip_grad_norm_(self.critic.parameters(), 1.0)
             self.critic_op.step()
-            losses_log['critic_losses'].append(critic_loss.item() * num_micro_batches)
+            losses_log['critic_losses'].append(critic_loss.item())
         del precomputed
         torch.cuda.empty_cache()
         return losses_log

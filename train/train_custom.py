@@ -12,7 +12,7 @@ from train.metrics_train import TrainingMetrics
 
 gamma = 0.99
 lambda_var = 0.95
-num_episodes = 1000
+num_episodes = 300
 num_agents = 2
 rollout_steps = 2048  
 best_reward = -float('inf')
