@@ -14,12 +14,12 @@ from agents.navigation.global_route_planner import GlobalRoutePlanner
 # Paleta de colores para visualizar segmentación semántica de CARLA
 SEG_PALETTE = {
     0:  (0, 0, 0),         # Unlabeled
-    4:  (220, 20, 60),     # Pedestrian (rojo)
-    6:  (157, 234, 50),    # RoadLine (verde claro)
-    7:  (128, 64, 128),    # Road (morado)
-    8:  (244, 35, 232),    # SideWalk (rosa)
-    10: (0, 0, 142),       # Vehicle (azul)
-    18: (250, 170, 30),    # TrafficLight (naranja)
+    12:  (220, 20, 60),     # Pedestrian (rojo)
+    24:  (157, 234, 50),    # RoadLine (verde claro)
+    1:  (128, 64, 128),    # Road (morado)
+    24:  (244, 35, 232),    # SideWalk (rosa)
+    14: (0, 0, 142),       # Vehicle (azul)
+    7: (250, 170, 30),    # TrafficLight (naranja)
 }
 
 
@@ -42,8 +42,8 @@ class CarlaControler():
         try:
             #CONEXION CON EL SERVIDOR
             print("Connecting to CARLA server...")
-            self.client = carla.Client('localhost', 2000)
-            self.client.set_timeout(10.0)
+            self.client = carla.Client('carla', 2000)
+            self.client.set_timeout(20.0)
 
             #SETEAMOS EL MAPA QUE QUEREMOS USAR
             print("Loading world...")

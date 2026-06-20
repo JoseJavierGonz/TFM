@@ -47,12 +47,12 @@ for episode in range(num_episodes):
 
             print(f"  Step {step}/{rollout_steps}")
 
-        if step % 200 == 0:
-            for i, v in enumerate(env.CARLA.vehicles_marl_list):
-                env.CARLA.save_seg_debug(
-                    v,
-                    f"debug_cam/ep{episode:03d}_step{step:04d}_agent{i}.png"
-                )
+        # if step % 200 == 0:
+        #     for i, v in enumerate(env.CARLA.vehicles_marl_list):
+        #         env.CARLA.save_seg_debug(
+        #             v,
+        #             f"debug_cam/ep{episode:03d}_step{step:04d}_agent{i}.png"
+        #         )
         actions_dict = {}
         log_probs_dict = {}
         states_dict = {}

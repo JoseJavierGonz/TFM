@@ -7,7 +7,7 @@ class SegEncoder(nn.Module):
     """CNN ligera que toma class IDs (B,H,W) de CARLA semantic_segmentation
     y devuelve features (B, out_dim). One-hot interno sobre las clases relevantes."""
     # CARLA tags: 4=Pedestrian, 6=RoadLine, 7=Road, 8=SideWalk, 10=Vehicles, 18=TrafficLight
-    SELECTED_CLASSES = [4, 6, 7, 8, 10, 18]
+    SELECTED_CLASSES = [1, 2, 7, 12, 14, 24]
 
     def __init__(self, out_dim=128, img_size=128):
         super().__init__()
@@ -100,7 +100,9 @@ class Critic_Actor(nn.Module):
         imgs_flat = images.view(B * A, H, W)
         vis = self.encoder(imgs_flat)            # (B*A, 128)
         vis = vis.view(B, A * 128)
-
+        
+        if st.dim() >= 3:
+            st = st.squeeze(1)
         st = self.state_net(state)
         fused = torch.cat([st, vis], dim=1)
         return self.fusion(fused)
