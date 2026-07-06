@@ -93,17 +93,17 @@ class Critic_Actor(nn.Module):
         )
 
     def forward(self, state, images):
-        # images: list de tensores (B, H, W) long (uno por agente) o tensor (B, A, H, W) long
+        
         if isinstance(images, (list, tuple)):
             images = torch.stack(images, dim=1)
         B, A, H, W = images.shape
         imgs_flat = images.view(B * A, H, W)
-        vis = self.encoder(imgs_flat)            # (B*A, 128)
+        vis = self.encoder(imgs_flat)           
         vis = vis.view(B, A * 128)
         
+        st = self.state_net(state)
         if st.dim() >= 3:
             st = st.squeeze(1)
-        st = self.state_net(state)
         fused = torch.cat([st, vis], dim=1)
         return self.fusion(fused)
 

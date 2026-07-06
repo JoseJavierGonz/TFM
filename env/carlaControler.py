@@ -42,21 +42,30 @@ class CarlaControler():
         try:
             #CONEXION CON EL SERVIDOR
             print("Connecting to CARLA server...")
-            self.client = carla.Client('carla', 2000)
+            self.client = carla.Client('carla-engine', 2000)
             self.client.set_timeout(20.0)
 
             #SETEAMOS EL MAPA QUE QUEREMOS USAR
             print("Loading world...")
             self.world = self.client.load_world("Town10HD")
-            self.client.set_timeout(10.0)
-            
+
+            #Rendering mode
+            self.fixed_delta_seconds = 0.05
+            self._original_settings = self.world.get_settings
+            settings = self.world.get_settings()
+            settings.no_rendering_mode = True
+            settings.synchronous_mode = True
+            settings.fixed_delta_seconds = self.fixed_delta_seconds
+            settings.substepping = True
+            settings.max_substep_delta_time = 0.01
+            settings.maz_substep = 10
+            self.world.apply_settings(settings)            
 
             #SETEAMOS EL CLIMA
             print("Setting weather...")
             self.weather = self.world.get_weather()
             self.weather_values()
             self.world.set_weather(self.weather)
-            time.sleep(5)
 
             #SETEAMOS VEHICULOS Y PERSONAS
             self.vehicles_npcs = 20 #numero de vehiculos que tendremos en el mapa
@@ -82,7 +91,6 @@ class CarlaControler():
             print("Setting camera view...")
             spectator = self.world.get_spectator()
             self.map_view(spectator)
-            time.sleep(10)
 
 
 
@@ -390,4 +398,12 @@ class CarlaControler():
                     print("Actors destroyed")
             except Exception as e:
                 print(f"Error destroying actors {e}")
+
+        try:
+            if self.world is not None and getattr(self, "_original_settings", None) is not None:
+                self.world.apply_settings(self._original_settings)
+            if getattr(self, "traffic_manager", None) is not None:
+                self.traffic_manager.set_synchronous_mode(False)
+        except Exception as e:
+            print(f"Error restoring world settings: {e}")
 

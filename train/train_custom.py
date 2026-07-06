@@ -2,6 +2,7 @@ import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import time
 import torch
 import gc
 from pynput import keyboard
@@ -13,6 +14,7 @@ from train.metrics_train import TrainingMetrics
 gamma = 0.99
 lambda_var = 0.95
 num_episodes = 300
+restart_carla = 10
 num_agents = 2
 rollout_steps = 2048  
 best_reward = -float('inf')
@@ -125,6 +127,42 @@ for episode in range(num_episodes):
             'episode': episode,
             'best_reward': best_reward
         }, 'checkpoints/best_model.pt')
+
+    if (episode + 1) % restart_carla == 0 and (episode + 1) < num_episodes:
+        print(f"Disconnect and connect from CARLA, episode {episode + 1}")
+
+        torch.save({
+            'actors': [actor.state_dict() for actor in mappo.actors],
+            'critic': mappo.critic.state_dict(),
+            'episode': episode,
+            'best_reward': best_reward
+        }, 'checkpoints/model_restart.pt')
+        
+        max_retries = 3
+
+        for i in range(max_retries):
+            try:
+                listener.stop()
+                env.close()
+                del env
+                gc.collect()
+                torch.cuda.empty_cache()
+                time.sleep(10)
+                env = envCARLA()
+                listener = keyboard.Listener(on_press=env.CARLA.which_camera)
+                listener.start()
+                print("Reconnection completed")
+                break
+            except Exception as e:
+                print(f"RESTART ERROR at close env: {e}. Attempt {i+1}")
+
+                gc.collect()
+                torch.cuda.empty_cache()
+                time.sleep(5)
+        else:
+            raise RuntimeError("CARLA can't be reached")
+
+        
 
 print("end")
 listener.stop()

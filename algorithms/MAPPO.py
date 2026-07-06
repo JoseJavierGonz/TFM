@@ -61,7 +61,7 @@ class MAPPO:
                 gae = delta + self.gamma * self.par_lambda * mask * gae
                 agent_adv.insert(0, gae)
 
-            advi = torch.tensor(agent_adv, dtype=torch.float32).to(self.device)
+            advi = torch.stack(agent_adv).to(self.device)
             targets[agent_id] = advi + values
             advantages[agent_id] = (advi - advi.mean()) / (advi.std() + 1e-7)
 
