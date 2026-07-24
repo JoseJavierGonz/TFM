@@ -16,8 +16,13 @@ class envCARLA(gym.Env):
             spaces.Box(low=np.array([-1.0, -1.0]), high=np.array([1.0, 1.0]), dtype=np.float32),
             spaces.Box(low=np.array([-1.0, -1.0]), high=np.array([1.0, 1.0]), dtype=np.float32) 
         ]
-        self.low_v = np.array([0.0, -1.0, 0.0, 0.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, 0.0], dtype = np.float32)
-        self.high_v = np.array([1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,], dtype = np.float32)
+        # [CHANGE] Added 4 camera-based features: dist_vehicle_norm, bearing_vehicle, dist_ped_norm, bearing_ped
+        # [CHANGE] low_v[3] = -1.0 so lat_norm can carry a sign (see __get_obs); the
+        # previous 0.0 silently clamped signed lateral offsets back to [0,1].
+        self.low_v  = np.array([0.0, -1.0, 0.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, 0.0,
+                                 0.0, -1.0, 0.0, -1.0], dtype=np.float32)
+        self.high_v = np.array([1.0,  1.0, 1.0, 1.0,  1.0,  1.0,  1.0,  1.0,  1.0,  1.0, 1.0,
+                                 1.0,  1.0, 1.0,  1.0], dtype=np.float32)
 
             
         vehicle_obs_space = spaces.Box(
@@ -76,6 +81,15 @@ class envCARLA(gym.Env):
         self.angular_diff_rad ={}
         self.better_distance = {}
         self.initial_dist = {}
+
+        # [CHANGE] Proximity-penalty shaping: makes the camera distance/bearing
+        # features influence behaviour continuously (dense obstacle avoidance)
+        # instead of only at the sparse terminal collision.
+        self.cam_features = {}                 # per-agent [dist_veh, bear_veh, dist_ped, bear_ped]
+        self.proximity_coef_vehicle = 3.0      # max penalty when a vehicle is right ahead & very close
+        self.proximity_coef_pedestrian = 5.0   # pedestrians weighted higher (safety)
+        self.proximity_dist_threshold = 0.6    # start penalising when dist_norm exceeds this ("too close")
+        self.proximity_bearing_ahead = 0.4     # only obstacles with |bearing| below this count as "ahead"
 
         for i, vehicle in enumerate(self.CARLA.vehicles_marl_list):
             self.__agent.append(vehicle)
@@ -188,20 +202,26 @@ class envCARLA(gym.Env):
 
 
                 if closest_idx < len(route) - 3:
-                    next_wp = route[closest_idx+1][0]  
+                    next_wp = route[closest_idx+1][0]
                     dist_to_next = vehicle_location.distance(next_wp.transform.location)
-                    vector_to_next = next_wp.transform.location - vehicle_location
-                    vehicle_forward = np.array([np.cos(np.radians(vehicle_angle)), 
-                                                np.sin(np.radians(vehicle_angle))])
-                    vehicle_right = np.array([np.sin(np.radians(vehicle_angle)), 
-                                            -np.cos(np.radians(vehicle_angle))])
+                    # [CHANGE] Proper 2D unit decomposition of the direction to the next
+                    # waypoint. Normalising the direction vector (instead of dividing the
+                    # raw projection by the 3D distance) guarantees
+                    # bearing_forward**2 + bearing_right**2 == 1 and removes the small bias
+                    # the z component introduced in the old denominator.
+                    delta = next_wp.transform.location - vehicle_location
+                    vector_to_next = np.array([delta.x, delta.y], dtype=np.float64)
+                    direction_to_next = vector_to_next / (np.linalg.norm(vector_to_next) + 1e-6)
 
-                    bearing_forward = (vector_to_next.x * vehicle_forward[0] + 
-                                    vector_to_next.y * vehicle_forward[1]) / (dist_to_next + 0.1)
-                    bearing_right = (vector_to_next.x * vehicle_right[0] + 
-                                    vector_to_next.y * vehicle_right[1]) / (dist_to_next + 0.1)
-                    bearing_forward = np.clip(bearing_forward, -1.0, 1.0)
-                    bearing_right = np.clip(bearing_right, -1.0, 1.0)
+                    yaw_rad = np.radians(vehicle_angle)
+                    vehicle_forward = np.array([np.cos(yaw_rad), np.sin(yaw_rad)])
+                    # [CHANGE] Corrected CARLA right vector (-sin, cos). The previous
+                    # (sin, -cos) pointed LEFT, so bearing_right was sign-inverted.
+                    # Revert with: np.array([np.sin(yaw_rad), -np.cos(yaw_rad)])
+                    vehicle_right = np.array([-np.sin(yaw_rad), np.cos(yaw_rad)])
+
+                    bearing_forward = float(np.clip(np.dot(direction_to_next, vehicle_forward), -1.0, 1.0))
+                    bearing_right = float(np.clip(np.dot(direction_to_next, vehicle_right), -1.0, 1.0))
                     #curvature = (next_wp.transform.rotation.yaw - closest_wp.transform.rotation.yaw + 180) % 360 - 180.0
 
                 e2_errors = []
@@ -233,13 +253,20 @@ class envCARLA(gym.Env):
             distance_y = vehicle_location.y - lane_center.y
             lane_direction = np.array([np.cos(np.radians(angle_center)), np.sin(np.radians(angle_center))])
             self.lateral_distance[agent_id] = - distance_x * lane_direction[1] + distance_y * lane_direction[0]
-            lat_norm = np.clip(self.lateral_distance[agent_id]/self.lane_width, 0, 1)
+            # [CHANGE] Signed lateral offset in [-1,1]: preserves WHICH side of the lane
+            # centre the vehicle is on (was [0,1], which discarded the sign and was then
+            # silently re-clamped to 0 by low_v[3]). Denominator lane_width/2 maps the
+            # lane edge to +-1. Requires low_v[3] = -1.0 (set in __init__).
+            lat_norm = np.clip(self.lateral_distance[agent_id] / (self.lane_width / 2), -1.0, 1.0)
             angular_diff = (vehicle_angle - angle_center + 180) % 360 - 180
             self.angular_diff_rad[agent_id] = np.deg2rad(angular_diff)
 
 
-            e1_norm = np.clip(self.angular_diff_rad[agent_id], -1.0, 1.0)
-            e2_norm = np.clip(e2_raw, -1.0, 1.0)
+            # [CHANGE] Normalise angular errors by pi so the full +-180deg range maps to
+            # [-1,1] (was clipped at +-1 rad ~= +-57deg, making e.g. 60deg and a 180deg
+            # wrong-way heading indistinguishable). e2 normalised likewise for consistency.
+            e1_norm = np.clip(self.angular_diff_rad[agent_id] / np.pi, -1.0, 1.0)
+            e2_norm = np.clip(e2_raw / np.pi, -1.0, 1.0)
 
             vehicle_state = np.array([self.throttle.get(agent_id, 0.0),
                                     self.steer.get(agent_id, 0.0),
@@ -260,23 +287,21 @@ class envCARLA(gym.Env):
                                     dtype=np.float32)
             
             vehicle_state = np.nan_to_num(vehicle_state, nan=0.0, posinf=0.0, neginf=0.0)
-            vehicle_state = np.clip(vehicle_state, self.low_v, self.high_v)
-            
+            # [CHANGE] Clip moved to after camera features are appended (see below)
 
             sensor_obs = self.CARLA.get_sensor_data(agent)
-            # # # lidar_data = sensor_obs['lidar_data']
-            # # # if lidar_data is None:
-            # # #     lidar_data = np.zeros((1000, 4), dtype=np.float32)
-
             camera_obs = sensor_obs['camera_data']
             if camera_obs is None:
                 camera_obs = np.zeros((128, 128), dtype=np.uint8)
 
+            # [CHANGE] Append 4 camera-based distance/bearing features and clip all 15 together
+            cam_features = self._estimate_distances_from_camera(camera_obs)
+            self.cam_features[agent_id] = cam_features  # [CHANGE] cached for proximity penalty
+            vehicle_state = np.concatenate([vehicle_state, cam_features])
+            vehicle_state = np.clip(vehicle_state, self.low_v, self.high_v)
 
-
-            
-            observation[agent_id] = {"vehicle_state" : vehicle_state,
-                                    "camera" : camera_obs}
+            observation[agent_id] = {"vehicle_state": vehicle_state,
+                                     "camera": camera_obs}
 
 
 
@@ -338,8 +363,26 @@ class envCARLA(gym.Env):
             
             
             #recompensas de coordinacion entre agentes
-            
-            
+
+            # [CHANGE] Dense proximity penalty (obstacle avoidance).
+            # Uses the camera-derived distance/bearing so the agent is pushed to
+            # slow/steer away BEFORE colliding, giving the visual geometry a
+            # continuous gradient instead of only the sparse terminal -20.
+            # Penalty is 0 at the distance threshold and grows to `coef` when the
+            # obstacle is very close AND straight ahead; obstacles off to the
+            # side (|bearing| >= proximity_bearing_ahead) are ignored.
+            cam = self.cam_features.get(agent_id)
+            if cam is not None:
+                for dist_n, bearing, coef in (
+                    (cam[0], cam[1], self.proximity_coef_vehicle),     # nearest vehicle
+                    (cam[2], cam[3], self.proximity_coef_pedestrian),  # nearest pedestrian
+                ):
+                    if dist_n > self.proximity_dist_threshold and abs(bearing) < self.proximity_bearing_ahead:
+                        closeness = (dist_n - self.proximity_dist_threshold) / (1.0 - self.proximity_dist_threshold)
+                        ahead = 1.0 - abs(bearing) / self.proximity_bearing_ahead
+                        reward -= coef * closeness * ahead
+
+
             #RECOMPENSAS Y PENALIZACIONES EXTRA
             #muy cerca de la meta
             if self.dist_to_goal[agent_id] < 2.0:
@@ -429,5 +472,54 @@ class envCARLA(gym.Env):
         
         return self.__get_obs()
     
+    # [CHANGE] New helper: pinhole-camera distance estimation from semantic segmentation
+    def _estimate_distances_from_camera(self, camera_obs: np.ndarray) -> np.ndarray:
+        """
+        Estimate distance and lateral bearing to the nearest vehicle and pedestrian
+        using the semantic-segmentation class-ID map and a pinhole-camera model.
+
+        Strategy: the densest horizontal scanline of each class corresponds to the
+        nearest/largest object; its apparent pixel-width gives an estimate of depth.
+
+        Returns float32 array of shape (4,):
+            [dist_vehicle_norm, bearing_vehicle, dist_ped_norm, bearing_ped]
+        dist_norm = 1 means very close; bearing ∈ [-1 (left), +1 (right)].
+        """
+        FOCAL_PX   = 64.0   # (128 / 2) / tan(45°)  — 90° H-FOV, 128 px wide
+        IMG_CX     = 64.0   # horizontal image centre (pixels)
+        MAX_DIST   = 30.0   # normalisation range (metres)
+        MIN_PIXELS = 3      # minimum pixel count to treat as a valid detection
+        CLASSES = [
+            (14, 2.0),   # vehicle  — approx. real width (m)
+            (12, 0.5),   # pedestrian — approx. real width (m)
+        ]
+
+        features: list = []
+        for cls_id, real_width in CLASSES:
+            mask = (camera_obs == cls_id)
+            if mask.sum() < MIN_PIXELS:
+                features.extend([0.0, 0.0])  # not visible → far (0), centred (0)
+                continue
+
+            # Row with the most pixels → nearest / largest object
+            row_counts   = mask.sum(axis=1)
+            densest_row  = int(np.argmax(row_counts))
+            col_indices  = np.where(mask[densest_row])[0]
+
+            apparent_w_px = float(col_indices[-1] - col_indices[0] + 1)
+            if apparent_w_px < 1.0:
+                features.extend([0.0, 0.0])
+                continue
+
+            dist_m    = (real_width * FOCAL_PX) / apparent_w_px
+            dist_norm = float(np.clip(1.0 - dist_m / MAX_DIST, 0.0, 1.0))  # 1=close, 0=far
+
+            cx      = float(col_indices[0] + col_indices[-1]) / 2.0
+            bearing = float(np.clip((cx - IMG_CX) / IMG_CX, -1.0, 1.0))
+
+            features.extend([dist_norm, bearing])
+
+        return np.array(features, dtype=np.float32)
+
     def close(self):
         self.CARLA.destroy_actors()

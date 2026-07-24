@@ -212,12 +212,15 @@ class CarlaControler():
         
         if need_npcs == False:
             vehicles_MARL=['vehicle.ford.mustang', 'vehicle.tesla.model3']
-            for vehicle in vehicles_MARL:
+            for marl_idx, vehicle in enumerate(vehicles_MARL):
                 try:
                     blueprint_marl=self.world.get_blueprint_library().find(vehicle)
                     if not blueprint_marl:
                         print("Vehicle MARL not found")
                         continue
+                    # [CHANGE] Tag so viewer can identify MARL vehicles unambiguously
+                    if blueprint_marl.has_attribute('role_name'):
+                        blueprint_marl.set_attribute('role_name', f'marl_agent_{marl_idx}')
                     
                     actor = None
                     attempts = 0

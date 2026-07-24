@@ -25,7 +25,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 metrics = TrainingMetrics()
 env = envCARLA()
-mappo = MAPPO(num_agents=num_agents, space_obs=11, space_act=2, gamma=gamma, par_lambda=lambda_var, device=device)
+mappo = MAPPO(num_agents=num_agents, space_obs=15, space_act=2, gamma=gamma, par_lambda=lambda_var, device=device)  # [CHANGE] 11 → 15 (added 4 camera distance/bearing features)
 listener = keyboard.Listener(on_press=env.CARLA.which_camera)
 listener.start()
 for episode in range(num_episodes):
