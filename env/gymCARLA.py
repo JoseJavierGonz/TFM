@@ -16,8 +16,10 @@ class envCARLA(gym.Env):
             spaces.Box(low=np.array([-1.0, -1.0]), high=np.array([1.0, 1.0]), dtype=np.float32),
             spaces.Box(low=np.array([-1.0, -1.0]), high=np.array([1.0, 1.0]), dtype=np.float32) 
         ]
-        self.low_v = np.array([0.0, -1.0, 0.0, 0.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, 0.0], dtype = np.float32)
-        self.high_v = np.array([1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0,], dtype = np.float32)
+        self.low_v  = np.array([0.0, -1.0, 0.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, 0.0,
+                                 0.0, -1.0, 0.0, -1.0], dtype=np.float32)
+        self.high_v = np.array([1.0,  1.0, 1.0, 1.0,  1.0,  1.0,  1.0,  1.0,  1.0,  1.0, 1.0,
+                                 1.0,  1.0, 1.0,  1.0], dtype=np.float32)
 
             
         vehicle_obs_space = spaces.Box(
@@ -41,12 +43,10 @@ class envCARLA(gym.Env):
         self.observation_space = [
             spaces.Dict({
                 "vehicle_state": vehicle_obs_space,
-                "camera": camera_obs,
                 # "lidar": lidar_obs
             }),
             spaces.Dict({
                 "vehicle_state": vehicle_obs_space,
-                "camera": camera_obs,
                 # "lidar": lidar_obs
             }),
         ]
@@ -67,7 +67,7 @@ class envCARLA(gym.Env):
         self.agent_id=[]
 
         self.CARLA = CarlaControler()
-        # self.camera_processor = CameraProcessor()
+        self.last_valid_cam = {}
         self.position_change = {}
         self.goal_positions = {}
         self.planner = {}
@@ -76,6 +76,12 @@ class envCARLA(gym.Env):
         self.angular_diff_rad ={}
         self.better_distance = {}
         self.initial_dist = {}
+
+        self.cam_features = {}                 
+        self.proximity_coef_vehicle = 3.0      
+        self.proximity_coef_pedestrian = 5.0   
+        self.proximity_dist_threshold = 0.6    
+        self.proximity_bearing_ahead = 0.4     
 
         for i, vehicle in enumerate(self.CARLA.vehicles_marl_list):
             self.__agent.append(vehicle)
@@ -94,12 +100,15 @@ class envCARLA(gym.Env):
             agent_id = self.agent_id[i]
             throttle_ = float(action[i][0])
             steer_i = float(action[i][1])
-            throttle_i = 0.5 * (1 + throttle_)
-            if throttle_i > 0:
+            if throttle_ > 0.0:
+                throttle_i = throttle_
                 brake_i = 0.0
-            else:
-                brake_i = 1.0
+            elif throttle_ < -0.1:
+                brake_i = 0.5*(-throttle_)
                 throttle_i = 0.0
+            else:
+                throttle_i = 0.0
+                brake_i = 0.0
 
             self.throttle[agent_id] = throttle_i
             self.steer[agent_id] = steer_i
@@ -188,20 +197,18 @@ class envCARLA(gym.Env):
 
 
                 if closest_idx < len(route) - 3:
-                    next_wp = route[closest_idx+1][0]  
+                    next_wp = route[closest_idx+1][0]
                     dist_to_next = vehicle_location.distance(next_wp.transform.location)
-                    vector_to_next = next_wp.transform.location - vehicle_location
-                    vehicle_forward = np.array([np.cos(np.radians(vehicle_angle)), 
-                                                np.sin(np.radians(vehicle_angle))])
-                    vehicle_right = np.array([np.sin(np.radians(vehicle_angle)), 
-                                            -np.cos(np.radians(vehicle_angle))])
+                    delta = next_wp.transform.location - vehicle_location
+                    vector_to_next = np.array([delta.x, delta.y], dtype=np.float64)
+                    direction_to_next = vector_to_next / (np.linalg.norm(vector_to_next) + 1e-6)
 
-                    bearing_forward = (vector_to_next.x * vehicle_forward[0] + 
-                                    vector_to_next.y * vehicle_forward[1]) / (dist_to_next + 0.1)
-                    bearing_right = (vector_to_next.x * vehicle_right[0] + 
-                                    vector_to_next.y * vehicle_right[1]) / (dist_to_next + 0.1)
-                    bearing_forward = np.clip(bearing_forward, -1.0, 1.0)
-                    bearing_right = np.clip(bearing_right, -1.0, 1.0)
+                    yaw_rad = np.radians(vehicle_angle)
+                    vehicle_forward = np.array([np.cos(yaw_rad), np.sin(yaw_rad)])
+                    vehicle_right = np.array([-np.sin(yaw_rad), np.cos(yaw_rad)])
+
+                    bearing_forward = float(np.clip(np.dot(direction_to_next, vehicle_forward), -1.0, 1.0))
+                    bearing_right = float(np.clip(np.dot(direction_to_next, vehicle_right), -1.0, 1.0))
                     #curvature = (next_wp.transform.rotation.yaw - closest_wp.transform.rotation.yaw + 180) % 360 - 180.0
 
                 e2_errors = []
@@ -233,13 +240,14 @@ class envCARLA(gym.Env):
             distance_y = vehicle_location.y - lane_center.y
             lane_direction = np.array([np.cos(np.radians(angle_center)), np.sin(np.radians(angle_center))])
             self.lateral_distance[agent_id] = - distance_x * lane_direction[1] + distance_y * lane_direction[0]
-            lat_norm = np.clip(self.lateral_distance[agent_id]/self.lane_width, 0, 1)
+
+            lat_norm = np.clip(self.lateral_distance[agent_id] / self.lane_width, 0, 1)
             angular_diff = (vehicle_angle - angle_center + 180) % 360 - 180
             self.angular_diff_rad[agent_id] = np.deg2rad(angular_diff)
 
 
-            e1_norm = np.clip(self.angular_diff_rad[agent_id], -1.0, 1.0)
-            e2_norm = np.clip(e2_raw, -1.0, 1.0)
+            e1_norm = np.clip(self.angular_diff_rad[agent_id] / np.pi, -1.0, 1.0)
+            e2_norm = np.clip(e2_raw / np.pi, -1.0, 1.0)
 
             vehicle_state = np.array([self.throttle.get(agent_id, 0.0),
                                     self.steer.get(agent_id, 0.0),
@@ -260,23 +268,20 @@ class envCARLA(gym.Env):
                                     dtype=np.float32)
             
             vehicle_state = np.nan_to_num(vehicle_state, nan=0.0, posinf=0.0, neginf=0.0)
-            vehicle_state = np.clip(vehicle_state, self.low_v, self.high_v)
-            
 
             sensor_obs = self.CARLA.get_sensor_data(agent)
-            # # # lidar_data = sensor_obs['lidar_data']
-            # # # if lidar_data is None:
-            # # #     lidar_data = np.zeros((1000, 4), dtype=np.float32)
-
             camera_obs = sensor_obs['camera_data']
             if camera_obs is None:
-                camera_obs = np.zeros((128, 128), dtype=np.uint8)
+                camera_obs = self.last_valid_cam.get(agent_id, np.zeros((128,128), dtype=np.uint8))
+            else:
+                self.last_valid_cam[agent_id] = camera_obs
 
+            cam_features = self._estimate_distances_from_camera(camera_obs)
+            self.cam_features[agent_id] = cam_features  
+            vehicle_state = np.concatenate([vehicle_state, cam_features])
+            vehicle_state = np.clip(vehicle_state, self.low_v, self.high_v)
 
-
-            
-            observation[agent_id] = {"vehicle_state" : vehicle_state,
-                                    "camera" : camera_obs}
+            observation[agent_id] = {"vehicle_state": vehicle_state}
 
 
 
@@ -303,8 +308,13 @@ class envCARLA(gym.Env):
             reward += angular_error
 
             #vairaciones bruscas del volante, buscando evitar que haga S
-            steer_penalty = - (self.steer.get(agent_id, 0.0) ** 2) * 0.5 
-            reward += steer_penalty
+            current_steer = self.steer.get(agent_id, 0.0)
+            last_steer = getattr(self, 'last_steer', {}).get(agent_id, 0.0)
+            delta_steer = current_steer - last_steer
+            reward -= (delta_steer ** 2) * 0.5
+
+            if not hasattr(self, 'last_steer'): self.last_steer = {}
+            self.last_steer[agent_id] = current_steer
 
             #recompensa por velociad objetivo
             speed_error = 1 -  min(1, (abs(self.velocity[agent_id] - self.velocity_target)/self.velocity_target))
@@ -318,9 +328,12 @@ class envCARLA(gym.Env):
 
             #penalizacion por alejarse del centro, recompensa por ir centrado
             #tambien tenemos en cuenta el angulo
-            distance_error = -(abs(self.lateral_distance[agent_id])/self.lane_width)
-            reward += 2.0 if abs(distance_error) < 0.1 else distance_error*2
+            # distance_error = -(abs(self.lateral_distance[agent_id])/self.lane_width)
+            # reward += 2.0 if abs(distance_error) < 0.1 else distance_error*2
             #reward += 5 - angular_diff if angular_diff < 2 else -angular_diff * 1.5 + wrong_direction 
+            lat_err = abs(self.lateral_distance[agent_id]) / self.lane_width
+            centering_reward = 2.0 - 4.0 * lat_err  # +2.0 centrado, 0.0 a 0.5 anchos de carril, -2.0 en el borde
+            reward += centering_reward
 
 
             if self.dist_to_goal[agent_id] < self.better_distance[agent_id]:
@@ -338,8 +351,18 @@ class envCARLA(gym.Env):
             
             
             #recompensas de coordinacion entre agentes
-            
-            
+            cam = self.cam_features.get(agent_id)
+            if cam is not None:
+                for dist_n, bearing, coef in (
+                    (cam[0], cam[1], self.proximity_coef_vehicle),    
+                    (cam[2], cam[3], self.proximity_coef_pedestrian),  
+                ):
+                    if dist_n > self.proximity_dist_threshold and abs(bearing) < self.proximity_bearing_ahead:
+                        closeness = (dist_n - self.proximity_dist_threshold) / (1.0 - self.proximity_dist_threshold)
+                        ahead = 1.0 - abs(bearing) / self.proximity_bearing_ahead
+                        reward -= coef * closeness * ahead
+
+
             #RECOMPENSAS Y PENALIZACIONES EXTRA
             #muy cerca de la meta
             if self.dist_to_goal[agent_id] < 2.0:
@@ -429,5 +452,48 @@ class envCARLA(gym.Env):
         
         return self.__get_obs()
     
+    def _estimate_distances_from_camera(self, camera_obs):
+        """
+        Estimate distance and lateral bearing to the nearest vehicle and pedestrian
+        using the semantic-segmentation
+        """
+        FOCAL_PX   = 64.0   
+        IMG_CX     = 64.0   
+        MAX_DIST   = 30.0   
+        MIN_PIXELS = 3      
+        CLASSES = [
+            (14, 2.0),   
+            (12, 0.5),   
+        ]
+        clean_cam = camera_obs.copy()
+        clean_cam[90:, :] = 0
+
+        features: list = []
+        for cls_id, real_width in CLASSES:
+            mask = (clean_cam == cls_id)
+            if mask.sum() < MIN_PIXELS:
+                features.extend([0.0, 0.0])  
+                continue
+
+            
+            row_counts   = mask.sum(axis=1)
+            densest_row  = int(np.argmax(row_counts))
+            col_indices  = np.where(mask[densest_row])[0]
+
+            apparent_w_px = float(col_indices[-1] - col_indices[0] + 1)
+            if apparent_w_px < 1.0:
+                features.extend([0.0, 0.0])
+                continue
+
+            dist_m    = (real_width * FOCAL_PX) / apparent_w_px
+            dist_norm = float(np.clip(1.0 - dist_m / MAX_DIST, 0.0, 1.0))  
+
+            cx      = float(col_indices[0] + col_indices[-1]) / 2.0
+            bearing = float(np.clip((cx - IMG_CX) / IMG_CX, -1.0, 1.0))
+
+            features.extend([dist_norm, bearing])
+
+        return np.array(features, dtype=np.float32)
+
     def close(self):
         self.CARLA.destroy_actors()

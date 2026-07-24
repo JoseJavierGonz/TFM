@@ -25,7 +25,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 metrics = TrainingMetrics()
 env = envCARLA()
-mappo = MAPPO(num_agents=num_agents, space_obs=11, space_act=2, gamma=gamma, par_lambda=lambda_var, device=device)
+mappo = MAPPO(num_agents=num_agents, space_obs=15, space_act=2, gamma=gamma, par_lambda=lambda_var, device=device)  
 listener = keyboard.Listener(on_press=env.CARLA.which_camera)
 listener.start()
 for episode in range(num_episodes):
@@ -51,7 +51,7 @@ for episode in range(num_episodes):
 
             print(f"  Step {step}/{rollout_steps}")
 
-        # if step % 200 == 0:
+        # if step % 100 == 0:
         #     for i, v in enumerate(env.CARLA.vehicles_marl_list):
         #         env.CARLA.save_seg_debug(
         #             v,
@@ -61,27 +61,23 @@ for episode in range(num_episodes):
         log_probs_dict = {}
         states_dict = {}
         buffer_action = {}
-        images_dict = {}
         
         for agent_idx in range(num_agents):
             agent_id = f"agent_{agent_idx}"
             state = torch.tensor(obs[agent_id]["vehicle_state"], dtype=torch.float32).unsqueeze(0).to(device)
             states_dict[agent_id] = state
-            image = torch.from_numpy(obs[agent_id]["camera"]).long()
-            image = image.unsqueeze(0).to(device)
-            images_dict[agent_id] = image
+
                         
-            action, log_prob, act_buffer = mappo.politic(state, agent_id, image)
+            action, log_prob, act_buffer = mappo.politic(state, agent_id)
             actions_dict[agent_id] = action
             buffer_action[agent_id] = act_buffer.detach().cpu()
             log_probs_dict[agent_id] = log_prob.detach().cpu()
             
             #Liberar tensores intermedios
-            del state, image
+            del state
         
         global_state = torch.cat([states_dict[f"agent_{i}"] for i in range(num_agents)], dim=1)
-        global_images = [images_dict[f"agent_{i}"] for i in range(num_agents)]
-        value = mappo.critic_evaluation(global_state, global_images).detach().squeeze()
+        value = mappo.critic_evaluation(global_state).detach().squeeze()
         
         actions_list = [actions_dict[f"agent_{i}"].squeeze(0).detach().cpu().numpy() for i in range(num_agents)]
         next_obs, rewards_dict, dones_dict, _ = env.step(actions_list)
@@ -89,11 +85,11 @@ for episode in range(num_episodes):
         for agent_id in rewards_dict.keys():
             episode_rewards[agent_id] += rewards_dict[agent_id]
         
-        buffer.store(buffer_action, log_probs_dict, rewards_dict, states_dict, images_dict,
+        buffer.store(buffer_action, log_probs_dict, rewards_dict, states_dict,
                      global_state.detach().cpu(), dones_dict, value)
         
         #Liberar variables grandes después de almacenarlas en buffer
-        del actions_dict, log_probs_dict, states_dict, buffer_action, global_state, value, images_dict
+        del actions_dict, log_probs_dict, states_dict, buffer_action, global_state, value
         
         obs = next_obs
         

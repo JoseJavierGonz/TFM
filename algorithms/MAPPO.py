@@ -11,7 +11,7 @@ class MAPPO:
         self.agent_id_to_idx = {f"agent_{i}": i for i in range(num_agents)}
      
         self.actors = [Actor_network(space_obs, space_act).to(self.device) for _ in range(num_agents)]
-        self.critic = Critic_Actor(space_obs * num_agents, num_agents).to(self.device)
+        self.critic = Critic_Actor(space_obs * num_agents).to(self.device)
 
         self.actors_op = [Adam(actor.parameters(), lr=3e-4) for actor in self.actors]
         self.critic_op = Adam(self.critic.parameters(), lr=3e-4)
@@ -19,14 +19,14 @@ class MAPPO:
         self.par_lambda = par_lambda
 
 
-    def politic(self, state, agent_id, image):
+    def politic(self, state, agent_id):
         if isinstance(agent_id, str):
             actor_id = self.agent_id_to_idx[agent_id]
         else:
             actor_id = agent_id
 
         actor = self.actors[actor_id]
-        mean, std = actor(image, state)
+        mean, std = actor(state)
         dist = Normal(mean, std) 
         action_to_buffer = dist.sample()
         
@@ -39,8 +39,8 @@ class MAPPO:
 
         return action_tensor, prob, action_to_buffer
     
-    def critic_evaluation(self, state_final, images):
-        return self.critic(state_final, images)
+    def critic_evaluation(self, state_final):
+        return self.critic(state_final)
     
 
     def update(self, buffer):
@@ -72,14 +72,12 @@ class MAPPO:
             agent_id = f"agent_{agent_idx}"
             precomputed[agent_id] = {
                 "states": torch.stack(buffer.states[agent_id]).squeeze(1).to(self.device).detach(),
-                "images": torch.stack(buffer.images[agent_id]).squeeze(1).to(self.device).detach(),
                 "actions": torch.stack(buffer.actions[agent_id]).squeeze(1).to(self.device).detach(),
                 "old_log_probs": torch.stack(buffer.log_probs[agent_id]).squeeze(-1).to(self.device).detach(),
                 "advantages": advantages[agent_id].detach()
             }
         
         global_state_tensor = torch.stack(buffer.global_states).to(self.device).detach()
-        global_images_list = [precomputed[f"agent_{i}"]["images"] for i in range(self.num_agents)]
 
         losses_log = {'actor_losses': {f"agent_{i}": [] for i in range(self.num_agents)}, 'critic_losses': []}
 
@@ -89,7 +87,7 @@ class MAPPO:
                 actor = self.actors[agent_idx]
                 data = precomputed[agent_id]
 
-                mean, std = actor(data["images"], data["states"])
+                mean, std = actor(data["states"])
                 dist = Normal(mean, std)
                 new_probs = dist.log_prob(data["actions"]).sum(dim=-1)
 
@@ -104,7 +102,7 @@ class MAPPO:
                 self.actors_op[agent_idx].step()
                 losses_log['actor_losses'][agent_id].append(actor_loss.item())
 
-            predicted_v = self.critic(global_state_tensor, global_images_list).squeeze(-1)
+            predicted_v = self.critic(global_state_tensor).squeeze(-1)
             critic_loss = (predicted_v - target_values).pow(2).mean()
 
             self.critic_op.zero_grad()
@@ -124,12 +122,11 @@ class BufferExp:
         self.log_probs = {}
         self.rewards = {}
         self.states = {}
-        self.images = {}
         self.dones = {}
         self.critic_values = []
         self.global_states = []
 
-    def store(self, actions_dict, log_probs_dict, rewards_dict, states_dict, images_dict,
+    def store(self, actions_dict, log_probs_dict, rewards_dict, states_dict,
               global_state, dones_dict, value):
         for agent_id in actions_dict.keys():
             if agent_id not in self.actions:
@@ -137,7 +134,6 @@ class BufferExp:
                 self.log_probs[agent_id] = []
                 self.rewards[agent_id] = []
                 self.states[agent_id] = []
-                self.images[agent_id] = []
                 self.dones[agent_id] = []
         
         for agent_id in actions_dict.keys():
@@ -145,7 +141,6 @@ class BufferExp:
             self.log_probs[agent_id].append(log_probs_dict[agent_id].cpu())
             self.rewards[agent_id].append(rewards_dict[agent_id])
             self.states[agent_id].append(states_dict[agent_id].cpu())
-            self.images[agent_id].append(images_dict[agent_id].cpu())
             self.dones[agent_id].append(dones_dict[agent_id])
         
         self.global_states.append(global_state.cpu())
