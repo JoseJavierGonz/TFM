@@ -1,5 +1,6 @@
 import sys
 import os
+import psutil
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import time
@@ -11,10 +12,11 @@ from env.gymCARLA import envCARLA
 from train.metrics_train import TrainingMetrics
 
 
+
 gamma = 0.99
 lambda_var = 0.95
 num_episodes = 300
-restart_carla = 10
+restart_carla = 3
 num_agents = 2
 rollout_steps = 2048  
 best_reward = -float('inf')
@@ -101,7 +103,6 @@ for episode in range(num_episodes):
         ]
         if agents_to_reset:
             obs = env.reset(agent_ids=agents_to_reset, same_position=same_position)
-    
     losses = mappo.update(buffer)
     buffer.clear_buffer()
     del buffer
@@ -166,5 +167,6 @@ for episode in range(num_episodes):
 
 print("end")
 listener.stop()
+listener.join()
 env.close()
 

@@ -7,7 +7,7 @@ import numpy as np
 import cv2
 import pynput
 import threading
-from queue import Queue, Empty
+from queue import Queue, Empty, Full
 from agents.navigation.global_route_planner import GlobalRoutePlanner
 
 
@@ -51,9 +51,9 @@ class CarlaControler():
 
             #Rendering mode
             self.fixed_delta_seconds = 0.05
-            self._original_settings = self.world.get_settings
+            self._original_settings = self.world.get_settings()
             settings = self.world.get_settings()
-            settings.no_rendering_mode = True
+            settings.no_rendering_mode = False
             settings.synchronous_mode = True
             settings.fixed_delta_seconds = self.fixed_delta_seconds
             settings.substepping = True
@@ -191,7 +191,7 @@ class CarlaControler():
                             if controller:
                                 controller.start()
                                 controller.set_max_speed(2.0)
-                                self.people_list.append(walker_actor)
+                                self.people_list.append((walker_actor, controller))
                             else:
                                 walker_actor.destroy()
 
@@ -217,9 +217,16 @@ class CarlaControler():
                     blueprint_marl=self.world.get_blueprint_library().find(vehicle)
                     if not blueprint_marl:
                         print("Vehicle MARL not found")
-                        return
-                    location = random.choice(self.world.get_map().get_spawn_points())
-                    actor = self.world.try_spawn_actor(blueprint_marl, location)
+                        continue
+                    
+                    actor = None
+                    attempts = 0
+                    max_attempts = 5
+                    while actor is None and attempts < max_attempts :
+                        location = random.choice(self.world.get_map().get_spawn_points())
+                        actor = self.world.try_spawn_actor(blueprint_marl, location)
+                        attempts += 1
+
                     if actor:
                         self.vehicles_marl_list.append(actor)
                         self.initialize_sensors(actor)
@@ -279,28 +286,46 @@ class CarlaControler():
         # lidar = self.world.spawn_actor(lidar, lidar_transform, attach_to=actor)
         collision_sensor = self.world.spawn_actor(collision, carla.Transform(), attach_to=actor)
         
+        actor_id = actor.id
         #guardar una referencia para ver si el coche colisiona
-        self.collision_occurs[actor] = False
+        self.collision_occurs[actor_id] = False
         
 
-        if actor in self.sensors:
-            print(f"{actor} saved previously")
+        if actor_id in self.sensors:
+            print(f"{actor_id} saved previously")
         else:
             #self.sensors[actor] = {'camera':camera, 'lidar':lidar, 'collision':collision_sensor}
-            self.sensors[actor] = {'camera': camera, 'collision': collision_sensor}
-            self.sensors_data[actor] = {'camera_data': None, 'lidar_data': None}
+            self.sensors[actor_id] = {'camera': camera, 'collision': collision_sensor}
+            self.sensors_data[actor_id] = {'camera_data': None, 'lidar_data': None}
 
             # Cola por sensor para sincronízación estricta tick<->frame
-            self.camera_queues[actor] = Queue()
-            camera.listen(self.camera_queues[actor].put)
+            self.camera_queues[actor_id] = Queue(maxsize=1)
+            camera.listen(lambda image, actor_id=actor_id : self.__camera_callback(image, actor_id))
             # lidar.listen(lambda data, v=actor: self.__lidar_buffer(v,data))
-            collision_sensor.listen(lambda data, v=actor: self.__on_collision(v, data))
+            collision_sensor.listen(lambda data, v=actor_id: self.__on_collision(v, data))
+
+
+    def __camera_callback(self, image, actor_id):
+        if getattr(self, "closing", False):
+            return
+        if actor_id not in self.camera_queues:
+            return
+        q = self.camera_queues[actor_id]
+        if q.full():
+            try:
+                q.get_nowait()
+            except Empty:
+                pass
+        try:
+            q.put_nowait(image)
+        except Full:
+            pass
 
 
     def get_sensor_data(self, vehicle):
         """Get latest sensor data for a vehicle"""
-        if vehicle in self.sensors_data:
-            return self.sensors_data[vehicle]
+        if vehicle.id in self.sensors_data:
+            return self.sensors_data[vehicle.id]
         return {'camera_data': None, 'lidar_data': None}
     
     def get_map(self):
@@ -309,30 +334,31 @@ class CarlaControler():
     
     def tick(self):
         """Advance simulation by one tick and drain sensor queues with strict frame sync."""
+        if getattr(self, "closing", False):
+            return
         frame = self.world.tick()
-        for vehicle, q in self.camera_queues.items():
+        for actor_id, q in self.camera_queues.items():
             try:
-                data = None
-                while True:
                     data = q.get(timeout=2.0)
                     if data.frame >= frame:
-                        break
-                if data is not None:
-                    self.__save_camera_data(vehicle, data)
+                        self.__save_camera_data(actor_id, data)
+
             except Empty:
                 print(f"[CARLA] Timeout esperando frame de cámara (frame {frame})")
     
 
-    def __on_collision(self, vehicle, measure):
+    def __on_collision(self, vehicle_id, measure):
         """Call if collision occurs"""
-        self.collision_occurs[vehicle] = True
+        self.collision_occurs[vehicle_id] = True
 
 
 
     def reset_collision(self, vehicle):
         """Reset collision flag for a vehicle in each new episodie"""
-        if vehicle in self.collision_occurs:
-            self.collision_occurs[vehicle] = False
+        if getattr(self, "closing", False):
+            return
+        if vehicle.id in self.collision_occurs:
+            self.collision_occurs[vehicle.id] = False
             
     
     def __lidar_buffer(self, vehicle, measure):
@@ -386,18 +412,54 @@ class CarlaControler():
     def destroy_actors(self):
         """Destructor"""
         print("WARNING: destroy_actors() called!")
-        for actor, sensors in self.sensors.items():
+
+        self.closing = True
+        for actor_id, sensors in self.sensors.items():
             for sensor in sensors.values():
-                if sensor.is_alive:
+                try:
+                    #if sensor.is_alive:
                     sensor.stop()
+                except:
+                    pass
+        time.sleep(0.5)
+        for actor_id, sensors in self.sensors.items():
+            for sensor in sensors.values():
+                try:
+                    #if sensor.is_alive:
                     sensor.destroy()
-        for actor in self.vehicles_npcs_list + self.vehicles_marl_list + self.people_list :
+                except:
+                    pass
+        self.camera_queues.clear()
+        self.sensors.clear()
+        self.sensors_data.clear()
+                
+        for walker, controller in self.people_list:
             try:
-                if actor.is_alive:
-                    actor.destroy()
-                    print("Actors destroyed")
+                controller.stop()
+                controller.destroy()
+                walker.destroy()
+            except Exception as e:
+                pass
+        self.people_list.clear()
+
+        for actor in self.vehicles_npcs_list:
+            try:
+                #if actor.is_alive:
+                actor.set_autopilot(False)
+                actor.destroy()
+                print("Actors destroyed")
             except Exception as e:
                 print(f"Error destroying actors {e}")
+        self.vehicles_npcs_list.clear()
+
+        for actor in self.vehicles_marl_list:
+            try:
+                #if actor.is_alive:
+                actor.destroy()
+                print("Actors destroyed")
+            except Exception as e:
+                print(f"Error destroying actors {e}")
+        self.vehicles_marl_list.clear()
 
         try:
             if self.world is not None and getattr(self, "_original_settings", None) is not None:

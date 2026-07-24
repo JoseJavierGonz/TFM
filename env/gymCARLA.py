@@ -347,7 +347,7 @@ class envCARLA(gym.Env):
                 done = True
                 print("hemos llegado a la meta")
             #colision
-            if self.CARLA.collision_occurs[agent]:
+            if self.CARLA.collision_occurs[agent.id]:
                 reward -= 20
                 if agent_id == "agent_0":
                     print(f" COLISION better_distance: {self.better_distance[agent_id]}, lateral_distance: {self.lateral_distance}, angular_distance: {self.angular_diff_rad[agent_id]}")
@@ -382,8 +382,8 @@ class envCARLA(gym.Env):
             agent = self.__agent[agent_idx]
             
             self.CARLA.reset_collision(agent)
-            if agent in self.CARLA.sensors_data:
-                self.CARLA.sensors_data[agent] = {'camera_data': None, 'lidar_data': None}
+            if agent.id in self.CARLA.sensors_data:
+                self.CARLA.sensors_data[agent.id] = {'camera_data': None, 'lidar_data': None}
 
             self.closest_waypoint_idx[agent_id] = 0
             self.last_waypoint_idx[agent_id] = 0
