@@ -218,7 +218,6 @@ class CarlaControler():
                     if not blueprint_marl:
                         print("Vehicle MARL not found")
                         continue
-                    # [CHANGE] Tag so viewer can identify MARL vehicles unambiguously
                     if blueprint_marl.has_attribute('role_name'):
                         blueprint_marl.set_attribute('role_name', f'marl_agent_{marl_idx}')
                     
@@ -397,15 +396,17 @@ class CarlaControler():
 
     def save_seg_debug(self, vehicle, path):
         """Guarda la última segmentación del vehículo coloreada para depuración visual."""
-        data = self.sensors_data.get(vehicle, {}).get('camera_data')
+        vehicle_id = vehicle.id if hasattr(vehicle, 'id') else vehicle
+        data = self.sensors_data.get(vehicle_id, {}).get('camera_data')
         if data is None:
             return False
-        H, W = data.shape
+        data_clean = data.copy()
+        data_clean[90:, :] = 0
+        H, W = data_clean.shape
         img = np.zeros((H, W, 3), dtype=np.uint8)
-        # default: gris oscuro para clases no listadas
         img[:] = (40, 40, 40)
         for k, color in SEG_PALETTE.items():
-            img[data == k] = color
+            img[data_clean == k] = color
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         cv2.imwrite(path, cv2.cvtColor(img, cv2.COLOR_RGB2BGR))
         return True
