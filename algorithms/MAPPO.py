@@ -19,14 +19,14 @@ class MAPPO:
         self.par_lambda = par_lambda
 
 
-    def politic(self, state, agent_id):
+    def politic(self, state, cam_state, agent_id):
         if isinstance(agent_id, str):
             actor_id = self.agent_id_to_idx[agent_id]
         else:
             actor_id = agent_id
 
         actor = self.actors[actor_id]
-        mean, std = actor(state)
+        mean, std = actor(state, cam_state)
         dist = Normal(mean, std) 
         action_to_buffer = dist.sample()
         
@@ -39,8 +39,8 @@ class MAPPO:
 
         return action_tensor, prob, action_to_buffer
     
-    def critic_evaluation(self, state_final):
-        return self.critic(state_final)
+    def critic_evaluation(self, state_final, state_cam):
+        return self.critic(state_final, state_cam)
     
 
     def update(self, buffer):
@@ -72,12 +72,14 @@ class MAPPO:
             agent_id = f"agent_{agent_idx}"
             precomputed[agent_id] = {
                 "states": torch.stack(buffer.states[agent_id]).squeeze(1).to(self.device).detach(),
+                "cam_states": torch.stack(buffer.cam_states[agent_id]).squeeze(1).to(self.device).detach(),
                 "actions": torch.stack(buffer.actions[agent_id]).squeeze(1).to(self.device).detach(),
                 "old_log_probs": torch.stack(buffer.log_probs[agent_id]).squeeze(-1).to(self.device).detach(),
                 "advantages": advantages[agent_id].detach()
             }
         
-        global_state_tensor = torch.stack(buffer.global_states).to(self.device).detach()
+        global_state_tensor = torch.stack(buffer.global_states).squeeze(1).to(self.device).detach()
+        global_cam_tensor = torch.stack(buffer.global_states_cam).squeeze(1).to(self.device).detach()
 
         losses_log = {'actor_losses': {f"agent_{i}": [] for i in range(self.num_agents)}, 'critic_losses': []}
 
@@ -87,7 +89,7 @@ class MAPPO:
                 actor = self.actors[agent_idx]
                 data = precomputed[agent_id]
 
-                mean, std = actor(data["states"])
+                mean, std = actor(data["states"], data["cam_states"])
                 dist = Normal(mean, std)
                 new_probs = dist.log_prob(data["actions"]).sum(dim=-1)
 
@@ -102,7 +104,7 @@ class MAPPO:
                 self.actors_op[agent_idx].step()
                 losses_log['actor_losses'][agent_id].append(actor_loss.item())
 
-            predicted_v = self.critic(global_state_tensor).squeeze(-1)
+            predicted_v = self.critic(global_state_tensor, global_cam_tensor).squeeze(-1)
             critic_loss = (predicted_v - target_values).pow(2).mean()
 
             self.critic_op.zero_grad()
@@ -122,18 +124,21 @@ class BufferExp:
         self.log_probs = {}
         self.rewards = {}
         self.states = {}
+        self.cam_states ={}
         self.dones = {}
         self.critic_values = []
         self.global_states = []
+        self.global_states_cam = []
 
-    def store(self, actions_dict, log_probs_dict, rewards_dict, states_dict,
-              global_state, dones_dict, value):
+    def store(self, actions_dict, log_probs_dict, rewards_dict, states_dict, cam_dict,
+              global_state, global_state_cam, dones_dict, value):
         for agent_id in actions_dict.keys():
             if agent_id not in self.actions:
                 self.actions[agent_id] = []
                 self.log_probs[agent_id] = []
                 self.rewards[agent_id] = []
                 self.states[agent_id] = []
+                self.cam_states[agent_id] = []
                 self.dones[agent_id] = []
         
         for agent_id in actions_dict.keys():
@@ -141,9 +146,11 @@ class BufferExp:
             self.log_probs[agent_id].append(log_probs_dict[agent_id].cpu())
             self.rewards[agent_id].append(rewards_dict[agent_id])
             self.states[agent_id].append(states_dict[agent_id].cpu())
+            self.cam_states[agent_id].append(cam_dict[agent_id].cpu())
             self.dones[agent_id].append(dones_dict[agent_id])
         
         self.global_states.append(global_state.cpu())
+        self.global_states_cam.append(global_state_cam.cpu())
         self.critic_values.append(value.cpu())
 
     def clear_buffer(self):

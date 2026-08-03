@@ -4,6 +4,7 @@ import carla
 import gym
 from gym import spaces
 import time
+import cv2
 import numpy as np
 from env.carlaControler import CarlaControler
 #from sensors.camera import CameraProcessor
@@ -27,12 +28,10 @@ class envCARLA(gym.Env):
             dtype=np.float32  
         )
 
-        camera_obs = spaces.Box(
-            low = 0,
-            high = 22, 
-            shape = (128, 128), 
-            dtype = np.uint8)
-
+        cam_features = spaces.Box(
+            low = np.array([0.0, 0.0, -1.0, 0.0, 0.0, -1.0]),
+            high = np.array([1.0, 1.0, 1.0, 1.0, 1.0, 1.0]), 
+            dtype=np.float32)
         lidar_obs = spaces.Box(
             low=-np.inf,
             high=np.inf,
@@ -43,7 +42,7 @@ class envCARLA(gym.Env):
         self.observation_space = [
             spaces.Dict({
                 "vehicle_state": vehicle_obs_space,
-                # "lidar": lidar_obs
+                "cam_features": cam_features,
             }),
             spaces.Dict({
                 "vehicle_state": vehicle_obs_space,
@@ -271,17 +270,25 @@ class envCARLA(gym.Env):
 
             sensor_obs = self.CARLA.get_sensor_data(agent)
             camera_obs = sensor_obs['camera_data']
-            if camera_obs is None:
-                camera_obs = self.last_valid_cam.get(agent_id, np.zeros((128,128), dtype=np.uint8))
-            else:
+            fresh_camera = camera_obs is not None
+
+            if fresh_camera:
                 self.last_valid_cam[agent_id] = camera_obs
+            else:
+                camera_obs = self.last_valid_cam.get(
+                    agent_id,
+                    np.zeros((128,128), dtype=np.uint8)
+                )
+            # if not fresh_camera:
+            #     print("WARNING: using stale camera frame")
 
             cam_features = self._estimate_distances_from_camera(camera_obs)
             self.cam_features[agent_id] = cam_features  
-            vehicle_state = np.concatenate([vehicle_state, cam_features])
+            #vehicle_state = np.concatenate([vehicle_state, cam_features])
             vehicle_state = np.clip(vehicle_state, self.low_v, self.high_v)
 
-            observation[agent_id] = {"vehicle_state": vehicle_state}
+            observation[agent_id] = {"vehicle_state": vehicle_state,
+                                     "cam_features": cam_features}
 
 
 
@@ -353,13 +360,37 @@ class envCARLA(gym.Env):
             #recompensas de coordinacion entre agentes
             cam = self.cam_features.get(agent_id)
             if cam is not None:
-                for dist_n, bearing, coef in (
-                    (cam[0], cam[1], self.proximity_coef_vehicle),    
-                    (cam[2], cam[3], self.proximity_coef_pedestrian),  
-                ):
-                    if dist_n > self.proximity_dist_threshold and abs(bearing) < self.proximity_bearing_ahead:
-                        closeness = (dist_n - self.proximity_dist_threshold) / (1.0 - self.proximity_dist_threshold)
-                        ahead = 1.0 - abs(bearing) / self.proximity_bearing_ahead
+
+                vehicle_detected, vehicle_proximity, vehicle_bearing = cam[:3]
+                pedestrian_detected, pedestrian_proximity, pedestrian_bearing = cam[3:]
+
+                for detected, proximity, bearing, coef in (
+                    (vehicle_detected,
+                    vehicle_proximity,
+                    vehicle_bearing,
+                    self.proximity_coef_vehicle),
+
+                    (pedestrian_detected,
+                    pedestrian_proximity,
+                    pedestrian_bearing,
+                    self.proximity_coef_pedestrian),):
+
+                    if not detected:
+                        continue
+
+                    if (
+                        proximity > self.proximity_dist_threshold
+                        and abs(bearing) < self.proximity_bearing_ahead):
+                        closeness = (
+                            (proximity - self.proximity_dist_threshold)
+                            / (1.0 - self.proximity_dist_threshold)
+                        )
+
+                        ahead = (
+                            1.0
+                            - abs(bearing) / self.proximity_bearing_ahead
+                        )
+
                         reward -= coef * closeness * ahead
 
 
@@ -407,6 +438,8 @@ class envCARLA(gym.Env):
             self.CARLA.reset_collision(agent)
             if agent.id in self.CARLA.sensors_data:
                 self.CARLA.sensors_data[agent.id] = {'camera_data': None, 'lidar_data': None}
+                self.last_valid_cam.pop(agent_id, None)
+                self.cam_features.pop(agent_id, None)
 
             self.closest_waypoint_idx[agent_id] = 0
             self.last_waypoint_idx[agent_id] = 0
@@ -449,51 +482,108 @@ class envCARLA(gym.Env):
         self.CARLA.vehicles_npcs_list = [v for v in self.CARLA.vehicles_npcs_list if v.is_alive]
         if len(self.CARLA.vehicles_npcs_list) < 20:
             self.CARLA.spawn_vehicle(True)
+
+        self.CARLA.tick()
         
         return self.__get_obs()
     
     def _estimate_distances_from_camera(self, camera_obs):
         """
-        Estimate distance and lateral bearing to the nearest vehicle and pedestrian
-        using the semantic-segmentation
+        Returns:
+            [vehicle_detected, vehicle_proximity, vehicle_bearing,
+            pedestrian_detected, pedestrian_proximity, pedestrian_bearing]
+
+        detectec:
+            0 -> no detected
+            1 -> detected
+
+        proximity:
+            0 -> no object
+            1 -> extremely close
+
+        bearing:
+            -1 -> left
+            0 -> center
+            1 -> right
         """
-        FOCAL_PX   = 64.0   
-        IMG_CX     = 64.0   
-        MAX_DIST   = 30.0   
-        MIN_PIXELS = 3      
+
+        IMG_CX = camera_obs.shape[1] / 2.0
+
         CLASSES = [
-            (14, 2.0),   
-            (12, 0.5),   
+            14,   # vehicle
+            12    # pedestrian
         ]
-        clean_cam = camera_obs.copy()
-        clean_cam[90:, :] = 0
 
-        features: list = []
-        for cls_id, real_width in CLASSES:
-            mask = (clean_cam == cls_id)
-            if mask.sum() < MIN_PIXELS:
-                features.extend([0.0, 0.0])  
-                continue
+        MIN_AREA = 8
 
-            
-            row_counts   = mask.sum(axis=1)
-            densest_row  = int(np.argmax(row_counts))
-            col_indices  = np.where(mask[densest_row])[0]
+        clean = camera_obs.copy()
 
-            apparent_w_px = float(col_indices[-1] - col_indices[0] + 1)
-            if apparent_w_px < 1.0:
-                features.extend([0.0, 0.0])
-                continue
+        # Eliminamos salpicadero/capó
+        clean[90:, :] = 0
 
-            dist_m    = (real_width * FOCAL_PX) / apparent_w_px
-            dist_norm = float(np.clip(1.0 - dist_m / MAX_DIST, 0.0, 1.0))  
+        features = []
 
-            cx      = float(col_indices[0] + col_indices[-1]) / 2.0
-            bearing = float(np.clip((cx - IMG_CX) / IMG_CX, -1.0, 1.0))
+        for cls in CLASSES:
 
-            features.extend([dist_norm, bearing])
+            mask = (clean == cls).astype(np.uint8)
 
-        return np.array(features, dtype=np.float32)
+            n_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
+                mask,
+                connectivity=8
+            )
+
+            best_score = -1.0
+            best_proximity = 0.0
+            best_bearing = 0.0
+            detected = 0.0
+
+            for label in range(1, n_labels):
+
+                area = float(stats[label, cv2.CC_STAT_AREA])
+
+                if area < MIN_AREA:
+                    continue
+
+                detected = 1.0
+                cx = float(centroids[label][0])
+
+                bearing = np.clip(
+                    (cx - IMG_CX) / IMG_CX,
+                    -1.0,
+                    1.0
+                )
+
+                #
+                # Proximidad basada en área
+                #
+                # sqrt(area) hace que el crecimiento sea mucho
+                # más estable que usar directamente area.
+                #
+
+                proximity = np.clip(
+                    np.sqrt(area) / 18.0,
+                    0.0,
+                    1.0
+                )
+
+                #
+                # Queremos priorizar objetos delante.
+                #
+
+                score = proximity * (1.0 - 0.5 * abs(bearing))
+
+                if score > best_score:
+                    best_score = score
+                    best_proximity = proximity
+                    best_bearing = bearing
+
+            features.extend([
+                detected,
+                float(best_proximity),
+                float(best_bearing)
+            ])
+
+        return np.asarray(features, dtype=np.float32)
 
     def close(self):
         self.CARLA.destroy_actors()

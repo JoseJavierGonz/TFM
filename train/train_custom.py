@@ -25,7 +25,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 metrics = TrainingMetrics()
 env = envCARLA()
-mappo = MAPPO(num_agents=num_agents, space_obs=15, space_act=2, gamma=gamma, par_lambda=lambda_var, device=device)  
+mappo = MAPPO(num_agents=num_agents, space_obs=11, space_act=2, gamma=gamma, par_lambda=lambda_var, device=device)  
 listener = keyboard.Listener(on_press=env.CARLA.which_camera)
 listener.start()
 for episode in range(num_episodes):
@@ -60,15 +60,18 @@ for episode in range(num_episodes):
         actions_dict = {}
         log_probs_dict = {}
         states_dict = {}
+        cam_dict = {}
         buffer_action = {}
         
         for agent_idx in range(num_agents):
             agent_id = f"agent_{agent_idx}"
             state = torch.tensor(obs[agent_id]["vehicle_state"], dtype=torch.float32).unsqueeze(0).to(device)
+            cam_state = torch.tensor(obs[agent_id]["cam_features"], dtype=torch.float32).unsqueeze(0).to(device)
             states_dict[agent_id] = state
+            cam_dict[agent_id] = cam_state
 
                         
-            action, log_prob, act_buffer = mappo.politic(state, agent_id)
+            action, log_prob, act_buffer = mappo.politic(state, cam_state, agent_id)
             actions_dict[agent_id] = action
             buffer_action[agent_id] = act_buffer.detach().cpu()
             log_probs_dict[agent_id] = log_prob.detach().cpu()
@@ -77,7 +80,8 @@ for episode in range(num_episodes):
             del state
         
         global_state = torch.cat([states_dict[f"agent_{i}"] for i in range(num_agents)], dim=1)
-        value = mappo.critic_evaluation(global_state).detach().squeeze()
+        global_state_cam = torch.cat([cam_dict[f"agent_{i}"] for i in range(num_agents)], dim=1)
+        value = mappo.critic_evaluation(global_state, global_state_cam).detach().squeeze()
         
         actions_list = [actions_dict[f"agent_{i}"].squeeze(0).detach().cpu().numpy() for i in range(num_agents)]
         next_obs, rewards_dict, dones_dict, _ = env.step(actions_list)
@@ -85,11 +89,11 @@ for episode in range(num_episodes):
         for agent_id in rewards_dict.keys():
             episode_rewards[agent_id] += rewards_dict[agent_id]
         
-        buffer.store(buffer_action, log_probs_dict, rewards_dict, states_dict,
-                     global_state.detach().cpu(), dones_dict, value)
+        buffer.store(buffer_action, log_probs_dict, rewards_dict, states_dict, cam_dict,
+                     global_state.detach().cpu(), global_state_cam.detach().cpu(), dones_dict, value)
         
         #Liberar variables grandes después de almacenarlas en buffer
-        del actions_dict, log_probs_dict, states_dict, buffer_action, global_state, value
+        del actions_dict, log_probs_dict, states_dict, buffer_action, global_state, global_state_cam, cam_dict, value
         
         obs = next_obs
         

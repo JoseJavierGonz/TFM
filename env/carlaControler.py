@@ -301,7 +301,7 @@ class CarlaControler():
             self.sensors_data[actor_id] = {'camera_data': None, 'lidar_data': None}
 
             # Cola por sensor para sincronízación estricta tick<->frame
-            self.camera_queues[actor_id] = Queue(maxsize=1)
+            self.camera_queues[actor_id] = Queue(maxsize=4)
             camera.listen(lambda image, actor_id=actor_id : self.__camera_callback(image, actor_id))
             # lidar.listen(lambda data, v=actor: self.__lidar_buffer(v,data))
             collision_sensor.listen(lambda data, v=actor_id: self.__on_collision(v, data))
@@ -340,13 +340,20 @@ class CarlaControler():
             return
         frame = self.world.tick()
         for actor_id, q in self.camera_queues.items():
-            try:
-                    data = q.get(timeout=2.0)
-                    if data.frame >= frame:
-                        self.__save_camera_data(actor_id, data)
+            while True:
 
-            except Empty:
-                print(f"[CARLA] Timeout esperando frame de cámara (frame {frame})")
+                try:
+                    data = q.get(timeout=2.0)
+                except Empty:
+                    print(f"[WARNING] Camera timeout for actor {actor_id} (frame {frame})")
+                    continue
+
+                if data.frame < frame:
+                    continue
+
+                if data.frame >= frame:
+                    self.__save_camera_data(actor_id, data)
+                    break
     
 
     def __on_collision(self, vehicle_id, measure):
