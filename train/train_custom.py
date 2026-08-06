@@ -20,6 +20,8 @@ restart_carla = 3
 num_agents = 2
 rollout_steps = 2048  
 best_reward = -float('inf')
+oom=False
+process = psutil.Process(os.getpid())
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -50,6 +52,18 @@ for episode in range(num_episodes):
                 env.CARLA.follow_vehicle(env.CARLA.vehicles_marl_list[1])
 
             print(f"  Step {step}/{rollout_steps}")
+            rss = process.memory_info().rss / 1024 **2
+            print(f"RSS {rss:.1f} MB")
+            if rss > 6000 and not oom:
+                oom=True
+                with open("errores.txt", "a") as f:
+                    f.write(f"\n sensors:", {sum(len(v) for v in env.CARLA.sensors.values())})
+                    f.write(f"\n queues:", {len(env.CARLA.camera_queues)})
+                    f.write(f"\n Sensor data:", {len(env.CARLA.sensors_data)})
+                    f.write(f"\n People: {len(env.CARLA.people_list)}")
+                    f.write(f"\n NPCs: {len(env.CARLA.vehicles_npcs_list)}")
+                    f.write(f"\n MARL: {len(env.CARLA.vehicles_marl_list)}")
+
 
         # if step % 100 == 0:
         #     for i, v in enumerate(env.CARLA.vehicles_marl_list):

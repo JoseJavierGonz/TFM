@@ -17,10 +17,8 @@ class envCARLA(gym.Env):
             spaces.Box(low=np.array([-1.0, -1.0]), high=np.array([1.0, 1.0]), dtype=np.float32),
             spaces.Box(low=np.array([-1.0, -1.0]), high=np.array([1.0, 1.0]), dtype=np.float32) 
         ]
-        self.low_v  = np.array([0.0, -1.0, 0.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, 0.0,
-                                 0.0, -1.0, 0.0, -1.0], dtype=np.float32)
-        self.high_v = np.array([1.0,  1.0, 1.0, 1.0,  1.0,  1.0,  1.0,  1.0,  1.0,  1.0, 1.0,
-                                 1.0,  1.0, 1.0,  1.0], dtype=np.float32)
+        self.low_v  = np.array([0.0, -1.0, 0.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, -1.0, 0.0], dtype=np.float32)
+        self.high_v = np.array([1.0,  1.0, 1.0, 1.0,  1.0,  1.0,  1.0,  1.0,  1.0,  1.0, 1.0], dtype=np.float32)
 
             
         vehicle_obs_space = spaces.Box(
@@ -431,6 +429,9 @@ class envCARLA(gym.Env):
             self.current_step = 0
             agent_ids = self.agent_id
         
+        vehicles = self.CARLA.world.get_actors().filter('vehicle.*')
+        spawn_points = self.CARLA.world.get_map().get_spawn_points()
+        
         for agent_id in agent_ids:
             agent_idx = self.agent_id.index(agent_id)
             agent = self.__agent[agent_idx]
@@ -445,9 +446,29 @@ class envCARLA(gym.Env):
             self.last_waypoint_idx[agent_id] = 0
             #spawn point aleatorio en diferentes episodios, el mismo en cada paso
             if not same_position:
-                spawn_points = self.CARLA.world.get_map().get_spawn_points()
                 if spawn_points:
-                    self.position_change[agent_idx] = np.random.choice(spawn_points)
+                    max_attempts = 15
+                    safe_distance = 6.0
+
+                    chosen_spawn = None
+                    for attempt in range(max_attempts):
+                        candidate_spawn = np.random.choice(spawn_points)
+                        is_occupied = False
+
+                        for vehicle in vehicles:
+                            if vehicle.id != agent.id:
+                                dist = vehicle.get_location().distance(candidate_spawn.location)
+                                if dist < safe_distance:
+                                    is_occupied = True
+                                    break
+                        if not is_occupied:
+                            chosen_spawn = candidate_spawn
+                            break
+                    if chosen_spawn is None:
+                        chosen_spawn = candidate_spawn    
+
+                    self.position_change[agent_idx] = chosen_spawn
+
                     available_goals = [sp for sp in spawn_points if sp != self.position_change[agent_idx]
                                                                 and sp.location.distance(self.position_change[agent_idx].location) > 200]
                     if not available_goals:
@@ -469,8 +490,8 @@ class envCARLA(gym.Env):
             else:
                 agent.set_transform(self.position_change[agent_idx])
             
-            time.sleep(2)
             agent.set_target_velocity(carla.Vector3D(0, 0, 0))
+            self.CARLA.tick()
 
         dead_npcs = [v for v in self.CARLA.vehicles_npcs_list if not v.is_alive]
         for npc in dead_npcs:
@@ -491,29 +512,9 @@ class envCARLA(gym.Env):
         """
         Returns:
             [vehicle_detected, vehicle_proximity, vehicle_bearing,
-            pedestrian_detected, pedestrian_proximity, pedestrian_bearing]
-
-        detectec:
-            0 -> no detected
-            1 -> detected
-
-        proximity:
-            0 -> no object
-            1 -> extremely close
-
-        bearing:
-            -1 -> left
-            0 -> center
-            1 -> right
+             pedestrian_detected, pedestrian_proximity, pedestrian_bearing]
         """
-
         IMG_CX = camera_obs.shape[1] / 2.0
-
-        CLASSES = [
-            14,   # vehicle
-            12    # pedestrian
-        ]
-
         MIN_AREA = 8
 
         clean = camera_obs.copy()
@@ -521,11 +522,18 @@ class envCARLA(gym.Env):
         # Eliminamos salpicadero/capó
         clean[90:, :] = 0
 
+
+        VEHICLE_CLASSES = [13, 14, 15, 16, 18, 19] # Rider, Car, Truck, Bus, Motorcycle, Bicycle
+        PEDESTRIAN_CLASSES = [12]                  # Pedestrian
+
+        CLASS_GROUPS = [VEHICLE_CLASSES, PEDESTRIAN_CLASSES]
+
         features = []
 
-        for cls in CLASSES:
+        for group in CLASS_GROUPS:
+            
 
-            mask = (clean == cls).astype(np.uint8)
+            mask = np.isin(clean, group).astype(np.uint8)
 
             n_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
                 mask,
@@ -538,7 +546,6 @@ class envCARLA(gym.Env):
             detected = 0.0
 
             for label in range(1, n_labels):
-
                 area = float(stats[label, cv2.CC_STAT_AREA])
 
                 if area < MIN_AREA:
@@ -553,22 +560,11 @@ class envCARLA(gym.Env):
                     1.0
                 )
 
-                #
-                # Proximidad basada en área
-                #
-                # sqrt(area) hace que el crecimiento sea mucho
-                # más estable que usar directamente area.
-                #
-
                 proximity = np.clip(
                     np.sqrt(area) / 18.0,
                     0.0,
                     1.0
                 )
-
-                #
-                # Queremos priorizar objetos delante.
-                #
 
                 score = proximity * (1.0 - 0.5 * abs(bearing))
 

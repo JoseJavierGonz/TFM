@@ -422,7 +422,15 @@ class CarlaControler():
     
     def destroy_actors(self):
         """Destructor"""
+        import psutil
+        import os
+        process = psutil.Process(os.getpid())
+        print(f"RSS before: {process.memory_info().rss / 1024**2:.1f} MB")
         print("WARNING: destroy_actors() called!")
+        print("sensors:", sum(len(v) for v in self.sensors.values()))
+        print("queues:", len(self.camera_queues))
+        print("Sensor data:", len(self.sensors_data))
+        
 
         self.closing = True
         for actor_id, sensors in self.sensors.items():
@@ -471,6 +479,12 @@ class CarlaControler():
             except Exception as e:
                 print(f"Error destroying actors {e}")
         self.vehicles_marl_list.clear()
+
+        print("WARNING: destroy_actors() called!")
+        print("sensors:", sum(len(v) for v in self.sensors.values()))
+        print("queues:", len(self.camera_queues))
+        print("Sensor data:", len(self.sensors_data))
+        print(f"RSS after: {process.memory_info().rss / 1024**2:.1f} MB")
 
         try:
             if self.world is not None and getattr(self, "_original_settings", None) is not None:
