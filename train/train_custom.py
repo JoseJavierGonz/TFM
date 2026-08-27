@@ -1,7 +1,9 @@
 import sys
 import os
+import psutil
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import time
 import torch
 import gc
 from pynput import keyboard
@@ -10,21 +12,81 @@ from env.gymCARLA import envCARLA
 from train.metrics_train import TrainingMetrics
 
 
+
 gamma = 0.99
 lambda_var = 0.95
-num_episodes = 300
+num_episodes = 500
+restart_carla = 3
 num_agents = 2
 rollout_steps = 2048  
 best_reward = -float('inf')
+oom=False
+process = psutil.Process(os.getpid())
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+
+def print_memory():
+    rss = process.memory_info().rss / 1024 **2
+    print(f"RSS {rss:.1f} MB")
+    try:
+        with open("/sys/fs/cgroup/memory.current") as f:
+            current = int(f.read()) / 1024 **2
+        print(f"cgroup {current:.1f} MB")
+
+        with open("/sys/fs/cgroup/memory.events") as f:
+            print("events")
+            print(f.read())
+    except Exception as e:
+        print("mem group unavailable: {e}")
+
+
+def save_checkpoint(path, episode, mappo, best_reward):
+    check = {'episode': episode,
+                'actors': [actor.state_dict() for actor in mappo.actors],
+                'critic': mappo.critic.state_dict(),
+                'actors_op': [optimizer.state_dict() for optimizer in mappo.actors_op],
+                'critic_op': mappo.critic_op.state_dict(),
+                'best_reward': best_reward,}
+    torch.save(check, path)
+
+
+def load_checkpoint(path, mappo):
+    check = torch.load(path, map_location=device, weights_only=False)
+    for actor, sd in zip(mappo.actors, check['actors']):
+        actor.load_state_dict(sd)
+    mappo.critic.load_state_dict(check['critic'])
+    if 'actors_op' in check and 'critic_op' in check: #momentaneo
+        for optimizer, state_dict in zip(mappo.actors_op, check['actors_op']):
+            optimizer.load_state_dict(state_dict)
+        mappo.critic_op.load_state_dict(check['critic_op'])
+    else:
+        print("antiguo")
+
+    best_reward = check.get('best_reward', -float('inf'))
+    start_episode = check.get('episode', -1)
+    print(f"resumed from {path} at {start_episode}")
+
+    return start_episode + 1, best_reward
+
+
 metrics = TrainingMetrics()
 env = envCARLA()
-mappo = MAPPO(num_agents=num_agents, space_obs=11, space_act=2, gamma=gamma, par_lambda=lambda_var, device=device)
+mappo = MAPPO(num_agents=num_agents, space_obs=12, space_act=2, gamma=gamma, par_lambda=lambda_var, device=device)  
 listener = keyboard.Listener(on_press=env.CARLA.which_camera)
 listener.start()
-for episode in range(num_episodes):
+
+start_episode = 0
+best_reward = -float('inf')
+checkpoint_path = None
+for path in ('checkpoints/model_restart.pt', 'checkpoints/best_model.pt'):
+    if os.path.exists(path) and (checkpoint_path is None or os.path.getmtime(path) > os.path.getmtime(checkpoint_path)):
+        checkpoint_path = path
+if checkpoint_path:
+    start_episode, best_reward = load_checkpoint(checkpoint_path, mappo)
+    
+
+for episode in range(start_episode, num_episodes):
     obs = env.reset()
     buffer = BufferExp()
     episode_rewards = {f"agent_{i}": 0 for i in range(num_agents)}
@@ -46,42 +108,47 @@ for episode in range(num_episodes):
                 env.CARLA.follow_vehicle(env.CARLA.vehicles_marl_list[1])
 
             print(f"  Step {step}/{rollout_steps}")
+
         actions_dict = {}
         log_probs_dict = {}
         states_dict = {}
+        cam_dict = {}
         buffer_action = {}
-        images_dict = {}
         
         for agent_idx in range(num_agents):
             agent_id = f"agent_{agent_idx}"
             state = torch.tensor(obs[agent_id]["vehicle_state"], dtype=torch.float32).unsqueeze(0).to(device)
+            cam_state = torch.tensor(obs[agent_id]["cam_features"], dtype=torch.float32).unsqueeze(0).to(device)
             states_dict[agent_id] = state
-            image = torch.from_numpy(obs[agent_id]["camera"]).permute(2,0,1).float()
-            image = image.unsqueeze(0).to(device)
-            images_dict[agent_id] = image
+            cam_dict[agent_id] = cam_state
+
                         
-            action, log_prob, act_buffer = mappo.politic(state, agent_id, image)
+            action, log_prob, act_buffer = mappo.politic(state, cam_state, agent_id)
+
             actions_dict[agent_id] = action
             buffer_action[agent_id] = act_buffer.detach().cpu()
             log_probs_dict[agent_id] = log_prob.detach().cpu()
             
             #Liberar tensores intermedios
-            del state, image
+            del state
         
         global_state = torch.cat([states_dict[f"agent_{i}"] for i in range(num_agents)], dim=1)
-        value = mappo.critic_evaluation(global_state).detach().squeeze()
+        global_state_cam = torch.cat([cam_dict[f"agent_{i}"] for i in range(num_agents)], dim=1)
+        value = mappo.critic_evaluation(global_state, global_state_cam).detach().squeeze()
+
         
         actions_list = [actions_dict[f"agent_{i}"].squeeze(0).detach().cpu().numpy() for i in range(num_agents)]
         next_obs, rewards_dict, dones_dict, _ = env.step(actions_list)
+
         
         for agent_id in rewards_dict.keys():
             episode_rewards[agent_id] += rewards_dict[agent_id]
         
-        buffer.store(buffer_action, log_probs_dict, rewards_dict, states_dict, images_dict,
-                     global_state.detach().cpu(), dones_dict, value)
+        buffer.store(buffer_action, log_probs_dict, rewards_dict, states_dict, cam_dict,
+                     global_state.detach().cpu(), global_state_cam.detach().cpu(), dones_dict, value)
         
         #Liberar variables grandes después de almacenarlas en buffer
-        del actions_dict, log_probs_dict, states_dict, buffer_action, global_state, value, images_dict
+        del actions_dict, log_probs_dict, states_dict, buffer_action, global_state, global_state_cam, cam_dict, value
         
         obs = next_obs
         
@@ -91,7 +158,7 @@ for episode in range(num_episodes):
         ]
         if agents_to_reset:
             obs = env.reset(agent_ids=agents_to_reset, same_position=same_position)
-    
+
     losses = mappo.update(buffer)
     buffer.clear_buffer()
     del buffer
@@ -111,14 +178,51 @@ for episode in range(num_episodes):
 
     if avg_reward > best_reward:
         best_reward = avg_reward
-        torch.save({
-            'actors': [actor.state_dict() for actor in mappo.actors],
-            'critic': mappo.critic.state_dict(),
-            'episode': episode,
-            'best_reward': best_reward
-        }, 'checkpoints/best_model.pt')
+        save_checkpoint('checkpoints/best_model.pt',
+                        episode,
+                        mappo,
+                        best_reward)
+
+    if (episode + 1) % restart_carla == 0 and (episode + 1) < num_episodes:
+        print(f"Disconnect and connect from CARLA, episode {episode + 1}")
+
+        save_checkpoint('checkpoints/model_restart.pt',
+                        episode,
+                        mappo,
+                        best_reward)
+        
+        max_retries = 3
+
+        for i in range(max_retries):
+            try:
+                listener.stop()
+                env.close()
+                del env
+                gc.collect()
+                torch.cuda.empty_cache()
+                time.sleep(10)
+                env = envCARLA()
+                listener = keyboard.Listener(on_press=env.CARLA.which_camera)
+                listener.start()
+                print("Reconnection completed")
+                break
+            except Exception as e:
+                print(f"RESTART ERROR at close env: {e}. Attempt {i+1}")
+
+                gc.collect()
+                torch.cuda.empty_cache()
+                time.sleep(5)
+        else:
+            raise RuntimeError("CARLA can't be reached")
+
+last_episode = num_episodes -1
+save_checkpoint('checkpoints/final_model.pt',
+                last_episode,
+                mappo,
+                best_reward)      
 
 print("end")
 listener.stop()
+listener.join()
 env.close()
 
