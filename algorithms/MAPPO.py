@@ -96,7 +96,7 @@ class MAPPO:
                 ratio = torch.exp(new_probs - data["old_log_probs"])
                 reinforce = ratio * data["advantages"]
                 clipping = torch.clamp(ratio, 0.8, 1.2) * data["advantages"]
-                actor_loss = -torch.min(reinforce, clipping).mean() - 0.05 * dist.entropy().mean()
+                actor_loss = -torch.min(reinforce, clipping).mean() - 0.07 * dist.entropy().mean()
 
                 self.actors_op[agent_idx].zero_grad()
                 actor_loss.backward()

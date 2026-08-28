@@ -17,7 +17,7 @@ class Actor_network(nn.Module):
         )
 
         self.camera_encoder = nn.Sequential(
-            nn.Linear(6,16),
+            nn.Linear(8,16),
             nn.ReLU(),
             nn.Linear(16,16),
             nn.ReLU()
@@ -31,9 +31,9 @@ class Actor_network(nn.Module):
         )
 
         self.mean_layer = nn.Linear(128, action_dim)
-        with torch.no_grad():
-            self.mean_layer.bias[0] = 1.0
-            self.mean_layer.bias[1] = 0.0
+        # with torch.no_grad():
+        #     self.mean_layer.bias[0] = 1.0
+        #     self.mean_layer.bias[1] = 0.0
 
         self.std_layer = nn.Linear(128, action_dim)
 
@@ -45,7 +45,8 @@ class Actor_network(nn.Module):
 
         mean = self.mean_layer(fusion)
         log_std = self.std_layer(fusion)
-        std = torch.exp(torch.clamp(log_std, -2, 1))
+        #std = torch.exp(torch.clamp(log_std, -2, 1))
+        std = torch.exp(torch.clamp(log_std, -4, -0.5))
         return mean, std
 
 
@@ -62,7 +63,7 @@ class Critic_Actor(nn.Module):
         )
 
         self.camera_encoder = nn.Sequential(
-                    nn.Linear(12,32),
+                    nn.Linear(16,32),
                     nn.ReLU(),      
                     nn.Linear(32,32),
                     nn.ReLU()

@@ -15,7 +15,7 @@ from train.metrics_train import TrainingMetrics
 
 gamma = 0.99
 lambda_var = 0.95
-num_episodes = 300
+num_episodes = 500
 restart_carla = 3
 num_agents = 2
 rollout_steps = 2048  
@@ -25,12 +25,68 @@ process = psutil.Process(os.getpid())
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+
+def print_memory():
+    rss = process.memory_info().rss / 1024 **2
+    print(f"RSS {rss:.1f} MB")
+    try:
+        with open("/sys/fs/cgroup/memory.current") as f:
+            current = int(f.read()) / 1024 **2
+        print(f"cgroup {current:.1f} MB")
+
+        with open("/sys/fs/cgroup/memory.events") as f:
+            print("events")
+            print(f.read())
+    except Exception as e:
+        print("mem group unavailable: {e}")
+
+
+def save_checkpoint(path, episode, mappo, best_reward):
+    check = {'episode': episode,
+                'actors': [actor.state_dict() for actor in mappo.actors],
+                'critic': mappo.critic.state_dict(),
+                'actors_op': [optimizer.state_dict() for optimizer in mappo.actors_op],
+                'critic_op': mappo.critic_op.state_dict(),
+                'best_reward': best_reward,}
+    torch.save(check, path)
+
+
+def load_checkpoint(path, mappo):
+    check = torch.load(path, map_location=device, weights_only=False)
+    for actor, sd in zip(mappo.actors, check['actors']):
+        actor.load_state_dict(sd)
+    mappo.critic.load_state_dict(check['critic'])
+    if 'actors_op' in check and 'critic_op' in check: #momentaneo
+        for optimizer, state_dict in zip(mappo.actors_op, check['actors_op']):
+            optimizer.load_state_dict(state_dict)
+        mappo.critic_op.load_state_dict(check['critic_op'])
+    else:
+        print("antiguo")
+
+    best_reward = check.get('best_reward', -float('inf'))
+    start_episode = check.get('episode', -1)
+    print(f"resumed from {path} at {start_episode}")
+
+    return start_episode + 1, best_reward
+
+
 metrics = TrainingMetrics()
 env = envCARLA()
-mappo = MAPPO(num_agents=num_agents, space_obs=11, space_act=2, gamma=gamma, par_lambda=lambda_var, device=device)  
+mappo = MAPPO(num_agents=num_agents, space_obs=12, space_act=2, gamma=gamma, par_lambda=lambda_var, device=device)  
 listener = keyboard.Listener(on_press=env.CARLA.which_camera)
 listener.start()
-for episode in range(num_episodes):
+
+start_episode = 0
+best_reward = -float('inf')
+checkpoint_path = None
+for path in ('checkpoints/model_restart.pt', 'checkpoints/best_model.pt'):
+    if os.path.exists(path) and (checkpoint_path is None or os.path.getmtime(path) > os.path.getmtime(checkpoint_path)):
+        checkpoint_path = path
+if checkpoint_path:
+    start_episode, best_reward = load_checkpoint(checkpoint_path, mappo)
+    
+
+for episode in range(start_episode, num_episodes):
     obs = env.reset()
     buffer = BufferExp()
     episode_rewards = {f"agent_{i}": 0 for i in range(num_agents)}
@@ -52,17 +108,16 @@ for episode in range(num_episodes):
                 env.CARLA.follow_vehicle(env.CARLA.vehicles_marl_list[1])
 
             print(f"  Step {step}/{rollout_steps}")
-            rss = process.memory_info().rss / 1024 **2
-            print(f"RSS {rss:.1f} MB")
-            if rss > 6000 and not oom:
-                oom=True
-                with open("errores.txt", "a") as f:
-                    f.write(f"\n sensors:", {sum(len(v) for v in env.CARLA.sensors.values())})
-                    f.write(f"\n queues:", {len(env.CARLA.camera_queues)})
-                    f.write(f"\n Sensor data:", {len(env.CARLA.sensors_data)})
-                    f.write(f"\n People: {len(env.CARLA.people_list)}")
-                    f.write(f"\n NPCs: {len(env.CARLA.vehicles_npcs_list)}")
-                    f.write(f"\n MARL: {len(env.CARLA.vehicles_marl_list)}")
+            #print_memory()
+            # if rss > 6000 and not oom:
+            #     oom=True
+            #     with open("errores.txt", "a") as f:
+            #         f.write(f"\n sensors: {sum(len(v) for v in env.CARLA.sensors.values())}")
+            #         f.write(f"\n queues: {len(env.CARLA.camera_queues)}")
+            #         f.write(f"\n Sensor data: {len(env.CARLA.sensors_data)}")
+            #         f.write(f"\n People: {len(env.CARLA.people_list)}")
+            #         f.write(f"\n NPCs: {len(env.CARLA.vehicles_npcs_list)}")
+            #         f.write(f"\n MARL: {len(env.CARLA.vehicles_marl_list)}")
 
 
         # if step % 100 == 0:
@@ -86,6 +141,7 @@ for episode in range(num_episodes):
 
                         
             action, log_prob, act_buffer = mappo.politic(state, cam_state, agent_id)
+
             actions_dict[agent_id] = action
             buffer_action[agent_id] = act_buffer.detach().cpu()
             log_probs_dict[agent_id] = log_prob.detach().cpu()
@@ -96,9 +152,11 @@ for episode in range(num_episodes):
         global_state = torch.cat([states_dict[f"agent_{i}"] for i in range(num_agents)], dim=1)
         global_state_cam = torch.cat([cam_dict[f"agent_{i}"] for i in range(num_agents)], dim=1)
         value = mappo.critic_evaluation(global_state, global_state_cam).detach().squeeze()
+
         
         actions_list = [actions_dict[f"agent_{i}"].squeeze(0).detach().cpu().numpy() for i in range(num_agents)]
         next_obs, rewards_dict, dones_dict, _ = env.step(actions_list)
+
         
         for agent_id in rewards_dict.keys():
             episode_rewards[agent_id] += rewards_dict[agent_id]
@@ -117,6 +175,7 @@ for episode in range(num_episodes):
         ]
         if agents_to_reset:
             obs = env.reset(agent_ids=agents_to_reset, same_position=same_position)
+
     losses = mappo.update(buffer)
     buffer.clear_buffer()
     del buffer
@@ -136,22 +195,18 @@ for episode in range(num_episodes):
 
     if avg_reward > best_reward:
         best_reward = avg_reward
-        torch.save({
-            'actors': [actor.state_dict() for actor in mappo.actors],
-            'critic': mappo.critic.state_dict(),
-            'episode': episode,
-            'best_reward': best_reward
-        }, 'checkpoints/best_model.pt')
+        save_checkpoint('checkpoints/best_model.pt',
+                        episode,
+                        mappo,
+                        best_reward)
 
     if (episode + 1) % restart_carla == 0 and (episode + 1) < num_episodes:
         print(f"Disconnect and connect from CARLA, episode {episode + 1}")
 
-        torch.save({
-            'actors': [actor.state_dict() for actor in mappo.actors],
-            'critic': mappo.critic.state_dict(),
-            'episode': episode,
-            'best_reward': best_reward
-        }, 'checkpoints/model_restart.pt')
+        save_checkpoint('checkpoints/model_restart.pt',
+                        episode,
+                        mappo,
+                        best_reward)
         
         max_retries = 3
 
@@ -177,7 +232,11 @@ for episode in range(num_episodes):
         else:
             raise RuntimeError("CARLA can't be reached")
 
-        
+last_episode = num_episodes -1
+save_checkpoint('checkpoints/final_model.pt',
+                last_episode,
+                mappo,
+                best_reward)      
 
 print("end")
 listener.stop()

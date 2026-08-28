@@ -36,6 +36,7 @@ class CarlaControler():
         self.vehicles_marl_list = []
         self.people_list = []
         self.collision_occurs = {}
+        self.__camera_miss_streak = {}
         self.camera_mode = 0
 
 
@@ -53,7 +54,7 @@ class CarlaControler():
             self.fixed_delta_seconds = 0.05
             self._original_settings = self.world.get_settings()
             settings = self.world.get_settings()
-            settings.no_rendering_mode = False
+            # settings.no_rendering_mode = False
             settings.synchronous_mode = True
             settings.fixed_delta_seconds = self.fixed_delta_seconds
             settings.substepping = True
@@ -336,24 +337,34 @@ class CarlaControler():
     
     def tick(self):
         """Advance simulation by one tick and drain sensor queues with strict frame sync."""
+        camera_timeout = 0.2
+        max_attempts = 3
+        warn_atfer_misses = 20
         if getattr(self, "closing", False):
             return
         frame = self.world.tick()
         for actor_id, q in self.camera_queues.items():
+            got_frame = False
             while True:
 
                 try:
                     data = q.get(timeout=2.0)
                 except Empty:
                     print(f"[WARNING] Camera timeout for actor {actor_id} (frame {frame})")
-                    continue
+                    break
 
                 if data.frame < frame:
                     continue
 
-                if data.frame >= frame:
-                    self.__save_camera_data(actor_id, data)
-                    break
+                self.__save_camera_data(actor_id, data)
+                got_frame = True
+                break
+            if got_frame:
+                self.__camera_miss_streak[actor_id] = 0
+            else:
+                self.__camera_miss_streak[actor_id] = self.__camera_miss_streak.get(actor_id, 0) + 1
+                if self.__camera_miss_streak[actor_id] == warn_atfer_misses:
+                    print(f"camera for {actor_id} misses after consecutive ticks, frame {frame}")
     
 
     def __on_collision(self, vehicle_id, measure):
@@ -408,7 +419,7 @@ class CarlaControler():
         if data is None:
             return False
         data_clean = data.copy()
-        data_clean[90:, :] = 0
+        data_clean[105:, :] = 0
         H, W = data_clean.shape
         img = np.zeros((H, W, 3), dtype=np.uint8)
         img[:] = (40, 40, 40)
@@ -488,7 +499,7 @@ class CarlaControler():
 
         try:
             if self.world is not None and getattr(self, "_original_settings", None) is not None:
-                self.world.apply_settings(self._original_settings)
+                self.world.apply_settings(self._original_settings())
             if getattr(self, "traffic_manager", None) is not None:
                 self.traffic_manager.set_synchronous_mode(False)
         except Exception as e:

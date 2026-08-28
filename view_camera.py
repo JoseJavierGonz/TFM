@@ -53,8 +53,8 @@ class AgentCameraViewer:
 
         # Posición de la cámara respecto al vehículo (perspectiva sobre el capó/techo)
         transform = carla.Transform(
-            carla.Location(x=1.6, z=1.7),
-            carla.Rotation(pitch=-5.0)
+            carla.Location(x=-6.0, z=3.0),
+            carla.Rotation(pitch=-15.0)
         )
 
         self.sensor = world.spawn_actor(camera_bp, transform, attach_to=self.vehicle)
