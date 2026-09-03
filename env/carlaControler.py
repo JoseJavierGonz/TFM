@@ -11,8 +11,8 @@ from queue import Queue, Empty, Full
 from agents.navigation.global_route_planner import GlobalRoutePlanner
 
 class CarlaControler():
-    """Class to connect with CARLA server, set the weather parameters, maps, cars and other simulator configurations"""
-    def __init__(self):
+    """Clase para conectarse al servidor de carla, setear peatones, mapa, coches, condiciones meteorológicas, spawnear sensores y demás"""
+    def __init__(self, num_vehicles=20, num_walkers=20):
 
         self.client = None
         self.world = None
@@ -45,7 +45,7 @@ class CarlaControler():
             settings.fixed_delta_seconds = self.fixed_delta_seconds
             settings.substepping = True
             settings.max_substep_delta_time = 0.01
-            settings.maz_substep = 10
+            settings.max_substep = 10
             self.world.apply_settings(settings)            
 
             #SETEAMOS EL CLIMA
@@ -55,7 +55,7 @@ class CarlaControler():
             self.world.set_weather(self.weather)
 
             #SETEAMOS VEHICULOS Y PERSONAS
-            self.vehicles_npcs = 20 #numero de vehiculos que tendremos en el mapa
+            self.vehicles_npcs = num_vehicles
             print("Spawning vehicles...")
             
             #Configurar Traffic Manager para los npcs
@@ -66,7 +66,7 @@ class CarlaControler():
             
             self.spawn_vehicle(False)
 
-            self.people = 20 #numero de personas que tendremos en el mapa
+            self.people = num_walkers
             print("Spawning pedestrians...")
             self.spawn_people()
 
@@ -75,6 +75,7 @@ class CarlaControler():
             print("Global Planner initialized")
 
             #Posiblidad de pasar un argumento según la vista que queramos tener del entorno(buscar si se podría seguir a nuestros vehiculos)
+            #en el servidor de la universidad perdemos esto ya que carla esta fuera del contenedor
             print("Setting camera view...")
             spectator = self.world.get_spectator()
             self.map_view(spectator)
@@ -90,7 +91,7 @@ class CarlaControler():
 
 
     def weather_values(self):
-        """Set weather parameters for rainy conditions"""
+        """Set de los parámetros de condiciones meteorológicas"""
         try:
             self.weather.precipitation = 80
             self.weather.precipitation_deposits = 70
@@ -100,7 +101,7 @@ class CarlaControler():
 
 
     def which_camera(self, key):
-        """Warm view change"""
+        """Cambio de camara en caliente"""
         try:
             if key.char == '0':
                 self.camera_mode = 0
@@ -115,7 +116,7 @@ class CarlaControler():
             print(f"Error changing the camara view {e}")
         
     def map_view(self, spectator):
-        """Set spectator camera"""
+        """Set camara de espectador"""
         try:
             transform = carla.Transform(
                 carla.Location(x=0, y=0, z=150),  
@@ -127,7 +128,7 @@ class CarlaControler():
 
     
     def follow_vehicle(self, vehicle):
-        """Update spectator to follow a vehicle"""
+        """Actualizador de la cámara personalizada de cada vehiculo"""
         try:
             spectator = self.world.get_spectator()
             transform = vehicle.get_transform()
@@ -146,7 +147,7 @@ class CarlaControler():
 
 
     def spawn_people(self):
-        """Set pederestian in the map"""
+        """Set peatones en el mapa"""
         if not self.world:
             print("World not initialized")
             return
@@ -185,9 +186,10 @@ class CarlaControler():
     
 
 
-    def spawn_vehicle(self, need_npcs=False):
-        """Spawn NPC and MARL vehicles in the map"""
+    def spawn_vehicle(self, need_npcs=False, count=None):
+        """Spawn NPC and MARL en el mapa"""
         #la idea es meter todo tipo de vehiculos pero controlar 2
+        #proximos trabajos podría ser elevar el número de vehiculos a controlar
         if not self.world:
             print("World not initialized")
             return
@@ -226,7 +228,10 @@ class CarlaControler():
             vehicles_npcs_blueprint = self.world.get_blueprint_library().filter('vehicle')
             if not vehicles_npcs_blueprint:
                 print("Vehicle not found")
-            for _ in range(self.vehicles_npcs):
+            #count = los vehiculos que faltan hasta el numero que se setee, ya que van muriendo y desapareciendo del CARLA en 
+            #algunos casos
+            n_spawn = self.vehicles_npcs if count is None else max(0, int(count))
+            for _ in range(n_spawn):
                 blueprint = random.choice(vehicles_npcs_blueprint)
                 random_points = random.choice(self.world.get_map().get_spawn_points())
                 actor = self.world.try_spawn_actor(blueprint, random_points)
@@ -235,120 +240,53 @@ class CarlaControler():
                     # Configurar comportamiento individual
                     self.traffic_manager.ignore_lights_percentage(actor, 0)  #Respetar semáforos
                     self.traffic_manager.distance_to_leading_vehicle(actor, 2.5)
-                    self.traffic_manager.vehicle_percentage_speed_difference(actor, -20)  #20% más lento (más seguro)
+                    self.traffic_manager.vehicle_percentage_speed_difference(actor, 20)  #20% más lento 
                     self.vehicles_npcs_list.append(actor)
         except Exception as e:
             print(f"Failed spawned vehicles {e}")
 
 
     def initialize_sensors(self, actor):
+        """Inicialización de sensores"""
         blueprint_librariy = self.world.get_blueprint_library()
         collision = blueprint_librariy.find('sensor.other.collision')
-        radar_bp = blueprint_librariy.find('sensor.other.radar')
 
-        # configurar radar
-        radar_bp.set_attribute('horizontal_fov', '90')
-        radar_bp.set_attribute('vertical_fov', '20')
-        radar_bp.set_attribute('range', '50')
-        radar_bp.set_attribute('points_per_second', '2000')
-        radar_bp.set_attribute('sensor_tick', '0.05')
-        
-        radar_transform = carla.Transform(
-            carla.Location(x=2.2, z=0.8),
-            carla.Rotation(pitch=0.0)
-        )
-
-        radar_sensor = self.world.spawn_actor(radar_bp, radar_transform, attach_to=actor)
         collision_sensor = self.world.spawn_actor(collision, carla.Transform(), attach_to=actor)
-        
+
         actor_id = actor.id
-        #guardar una referencia para ver si el coche colisiona
         self.collision_occurs[actor_id] = False
-        
 
         if actor_id in self.sensors:
             print(f"{actor_id} saved previously")
         else:
-            self.sensors[actor_id] = {'radar': radar_sensor, 'collision': collision_sensor}
-            self.sensors_data[actor_id] = {'camera_data': None, 'lidar_data': None, 'radar_data': None}
-
-            #Cola por sensor para sincronízación estricta tick<->frame
-            self.radar_queues[actor_id] = Queue(maxsize=4)
-            radar_sensor.listen(lambda data, actor_id=actor_id: self.__radar_callback(data, actor_id))
+            self.sensors[actor_id] = {'collision': collision_sensor}
             collision_sensor.listen(lambda data, v=actor_id: self.__on_collision(v, data))
 
-
-    def __radar_callback(self, radar_data, actor_id):
-        if getattr(self, "closing", False):
-            return
-        if actor_id not in self.radar_queues:
-            return
-        q = self.radar_queues[actor_id]
-        if q.full():
-            try:
-                q.get_nowait()
-            except Empty:
-                pass
-        try:
-            q.put_nowait(radar_data)
-        except Full:
-            pass
-
-
-    def get_sensor_data(self, vehicle):
-        """Get latest sensor data for a vehicle"""
-        if vehicle.id in self.sensors_data:
-            return self.sensors_data[vehicle.id]
-        return {'camera_data': None, 'lidar_data': None, 'radar_data': None}
-
-    def __process_radar_data(self, actor_id, radar_measurement):
-        """Process radar measurement into structured detections.
-        Each detection has: depth(m), azimuth(rad), altitude(rad), velocity(m/s)."""
-        RADAR_RANGE = 50.0
-        detections = []
-        for detection in radar_measurement:
-            detections.append({
-                'depth': detection.depth,
-                'azimuth': detection.azimuth,
-                'altitude': detection.altitude,
-                'velocity': detection.velocity  
-            })
-        self.sensors_data[actor_id]['radar_data'] = detections
     
     def get_map(self):
-        """Get CARLA map"""
+        """Getter del mapa de CARLA"""
         return self.world.get_map()
     
     def tick(self):
-        """Advance simulation by one tick and drain sensor queues with strict frame sync."""
+        """Tick de la simuladion."""
         if getattr(self, "closing", False):
             return
         self.world.tick()
-        for actor_id, q in self.radar_queues.items():
-            latest = None
-            while not q.empty():
-                try:
-                    latest = q.get_nowait()
-                except Empty:
-                    break
-            if latest is not None:
-                self.__process_radar_data(actor_id, latest)
     
 
     def __on_collision(self, vehicle_id, measure):
-        """Call if collision occurs"""
+        """Llamada si hay colision"""
         self.collision_occurs[vehicle_id] = True
 
 
 
     def reset_collision(self, vehicle):
-        """Reset collision flag for a vehicle in each new episodie"""
+        """Resetea la colision de los vehiculos en cada episodio"""
         if getattr(self, "closing", False):
             return
         if vehicle.id in self.collision_occurs:
             self.collision_occurs[vehicle.id] = False
             
-    
 
     
     def destroy_actors(self):

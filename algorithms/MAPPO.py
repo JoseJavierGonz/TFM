@@ -5,7 +5,10 @@ from models.networks import Actor_network, Critic_Actor
 
 
 class MAPPO:
+    """Algoritmo MAPPO.
+    Definimos como aprender y actualizar la política de los actores y el crítico"""
     def __init__(self, num_agents, space_obs, space_act, gamma, par_lambda, device):
+        """Constructor: donde vamos a ejecutar, creacion de redes, definición del optimizador"""
         self.device = device
         self.num_agents = num_agents
         self.agent_id_to_idx = {f"agent_{i}": i for i in range(num_agents)}
@@ -20,6 +23,7 @@ class MAPPO:
 
 
     def politic(self, state, cam_state, agent_id):
+        """Politica de los agentes. Seguirán una distribución Gaussiana"""
         if isinstance(agent_id, str):
             actor_id = self.agent_id_to_idx[agent_id]
         else:
@@ -27,7 +31,14 @@ class MAPPO:
 
         actor = self.actors[actor_id]
         mean, std = actor(state, cam_state)
-        dist = Normal(mean, std) 
+
+        #a veces llega un NaN y se carga el entrenamiento, por prevenir
+        if not torch.isfinite(mean).all() or not torch.isfinite(std).all():
+            print(f"[WARN] NaN/Inf en la politica de {agent_id}, usando accion neutra")
+            mean = torch.nan_to_num(mean, nan=0.0, posinf=0.0, neginf=0.0)
+            std = torch.nan_to_num(std, nan=0.1, posinf=0.1, neginf=0.1).clamp(min=1e-3)
+
+        dist = Normal(mean, std)
         action_to_buffer = dist.sample()
         
         throttle = torch.tanh(action_to_buffer[:, 0:1])
@@ -40,10 +51,13 @@ class MAPPO:
         return action_tensor, prob, action_to_buffer
     
     def critic_evaluation(self, state_final, state_cam):
+        """Evaluación del crítico"""
         return self.critic(state_final, state_cam)
     
 
     def update(self, buffer):
+        """Actualizacion de la politica que aprenden los agentes y el crítico.
+        A este último se le hace enfasis para que tenga mas casos de prueba"""
         advantages = {}
         targets = {}
         values = torch.stack(buffer.critic_values).squeeze(-1).to(self.device).detach()
@@ -83,6 +97,9 @@ class MAPPO:
 
         losses_log = {'actor_losses': {f"agent_{i}": [] for i in range(self.num_agents)}, 'critic_losses': []}
 
+
+        mb_size = 256
+        #5 epoch para actualizar la politica de los agentes viendo si es mejor o peor de lo que teniamos
         for epoch in range(5):
             for agent_idx in range(self.num_agents):
                 agent_id = f"agent_{agent_idx}"
@@ -93,10 +110,11 @@ class MAPPO:
                 dist = Normal(mean, std)
                 new_probs = dist.log_prob(data["actions"]).sum(dim=-1)
 
-                ratio = torch.exp(new_probs - data["old_log_probs"])
+                #clamp del exponente para evitar reventar el update
+                ratio = torch.exp((new_probs - data["old_log_probs"]).clamp(-10.0, 10.0))
                 reinforce = ratio * data["advantages"]
                 clipping = torch.clamp(ratio, 0.8, 1.2) * data["advantages"]
-                actor_loss = -torch.min(reinforce, clipping).mean() - 0.05 * dist.entropy().mean()
+                actor_loss = -torch.min(reinforce, clipping).mean() - 0.01 * dist.entropy().mean()
 
                 self.actors_op[agent_idx].zero_grad()
                 actor_loss.backward()
@@ -104,14 +122,18 @@ class MAPPO:
                 self.actors_op[agent_idx].step()
                 losses_log['actor_losses'][agent_id].append(actor_loss.item())
 
-            predicted_v = self.critic(global_state_tensor, global_cam_tensor).squeeze(-1)
-            critic_loss = (predicted_v - target_values).pow(2).mean()
+            #mas updates buscando un mejor critico y que a la larga se tenga mejor conocimiento del entorno
+            perm = torch.randperm(len_global, device=self.device)
+            for start in range(0, len_global, mb_size):
+                mb = perm[start:start + mb_size]
+                predicted_v = self.critic(global_state_tensor[mb], global_cam_tensor[mb]).squeeze(-1)
+                critic_loss = (predicted_v - target_values[mb]).pow(2).mean()
 
-            self.critic_op.zero_grad()
-            critic_loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.critic.parameters(), 1.0)
-            self.critic_op.step()
-            losses_log['critic_losses'].append(critic_loss.item())
+                self.critic_op.zero_grad()
+                critic_loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.critic.parameters(), 1.0)
+                self.critic_op.step()
+                losses_log['critic_losses'].append(critic_loss.item())
 
         del precomputed
         torch.cuda.empty_cache()
@@ -119,7 +141,9 @@ class MAPPO:
 
 
 class BufferExp:
+    """Buffer de experiencias"""
     def __init__(self):
+        """Constructor para cada diccionario que necesitemos"""
         self.actions = {}
         self.log_probs = {}
         self.rewards = {}
@@ -132,6 +156,7 @@ class BufferExp:
 
     def store(self, actions_dict, log_probs_dict, rewards_dict, states_dict, cam_dict,
               global_state, global_state_cam, dones_dict, value):
+        """Guardamos los datos en nuestros diccionarios"""
         for agent_id in actions_dict.keys():
             if agent_id not in self.actions:
                 self.actions[agent_id] = []
@@ -154,9 +179,11 @@ class BufferExp:
         self.critic_values.append(value.cpu())
 
     def clear_buffer(self):
+        """Limpiamos el buffer para no acumular basura entre episodios"""
         self.__init__()
         
     def __len__(self):
+        """Por si necesitamos obtener la longitud del buffer"""
         return len(self.global_states)
 
 
