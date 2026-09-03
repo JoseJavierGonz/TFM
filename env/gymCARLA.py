@@ -98,8 +98,6 @@ class envCARLA(gym.Env):
         self.curriculum_hold_min_s = 4.0
         self.curriculum_hold_max_s = 10.0
         self.curriculum_release_dist = 12.0
-        self.curriculum_block_ticks = {}
-        self.curriculum_max_block_ticks = 400 
         self.curriculum_release_idx = {}
 
         for i, vehicle in enumerate(self.CARLA.vehicles_marl_list):
@@ -539,7 +537,7 @@ class envCARLA(gym.Env):
                     self.route_xy[agent_id] = np.array(
                         [[wp.transform.location.x, wp.transform.location.y]
                          for wp, _ in self.planner[agent_id]], dtype=np.float64)
-                    
+                    #con esto vamos a saber si el vehiculo que detectemos esta en un punto de nuestra ruta
                     steps = np.linalg.norm(np.diff(self.route_xy[agent_id], axis=0), axis=1)
                     spacing = float(np.median(steps)) if len(steps) else 2.0
                     self.route_window[agent_id] = int(np.ceil(self.radar_range / max(0.5, spacing))) + 4
@@ -703,6 +701,7 @@ class envCARLA(gym.Env):
                 win = route_xy[lo:hi]
                 if len(win) < 2:
                     continue
+                #cuanto se desvia de nuestro carril el obstaculo
                 d_wp = np.linalg.norm(win - np.array([v_loc.x, v_loc.y]), axis=1)
                 k = int(np.argmin(d_wp))
                 tan = win[min(k + 1, len(win) - 1)] - win[max(k - 1, 0)]
@@ -770,14 +769,8 @@ class envCARLA(gym.Env):
         if not np.isfinite(dist) or dist > self.curriculum_release_dist \
                 or self.velocity.get(agent_id, 0.0) >= 0.5:
             self.safe_stop_counter[agent_id] = 0
-            self.curriculum_block_ticks[agent_id] = self.curriculum_block_ticks.get(agent_id, 0) + 1
-            if self.curriculum_block_ticks[agent_id] >= self.curriculum_max_block_ticks:
-                held_s = self.curriculum_max_block_ticks * self.CARLA.fixed_delta_seconds
-                print(f"{agent_id} no se acerco en {held_s:.0f}s, NPC retirado")
-                self._retire_curriculum_npc(agent_id)
             return
 
-        self.curriculum_block_ticks[agent_id] = 0
         self.safe_stop_counter[agent_id] = self.safe_stop_counter.get(agent_id, 0) + 1
         #nuestro vehiculo no ha aprendido, lo dejamos que siga un poco la ruta para que siga conduciendo
         #y espawneamos de nuevo el agente mas adelante
@@ -859,7 +852,6 @@ class envCARLA(gym.Env):
             np.random.uniform(self.curriculum_hold_min_s, self.curriculum_hold_max_s) / dt)
         self.curriculum_released[agent_id] = False
         self.safe_stop_counter[agent_id] = 0
-        self.curriculum_block_ticks[agent_id] = 0
 
     def _retire_curriculum_npc(self, agent_id):
         """Quitamos los vehiculos que hemos puesto para aprender a frenar 
@@ -874,7 +866,6 @@ class envCARLA(gym.Env):
         self.curriculum_released[agent_id] = False
         self.safe_stop_counter[agent_id] = 0
         self.curriculum_cooldown[agent_id] = 0
-        self.curriculum_block_ticks[agent_id] = 0
 
 
 
