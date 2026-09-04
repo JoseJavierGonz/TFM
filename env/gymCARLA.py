@@ -13,7 +13,8 @@ from env.carlaControler import CarlaControler
 class envCARLA(gym.Env):
     """Class to create a gym env, where implement the steps, rewards and so on"""
     """Clase donde crearemos en entorno de gym, implementaremos el step, las observaciones, rewards y reset"""
-    def __init__(self, num_vehicles=20, num_walkers=20, curriculum_prob=0.7):
+    def __init__(self, num_vehicles=20, num_walkers=20, curriculum_prob=0.7,
+                 perception="ground_truth"):
         self.action_space =  [
             spaces.Box(low=np.array([-1.0, -1.0]), high=np.array([1.0, 1.0]), dtype=np.float32),
             spaces.Box(low=np.array([-1.0, -1.0]), high=np.array([1.0, 1.0]), dtype=np.float32) 
@@ -47,7 +48,11 @@ class envCARLA(gym.Env):
             }),
         ]
 
-        self.CARLA = CarlaControler(num_vehicles=num_vehicles, num_walkers=num_walkers)
+        #ablacion de percepcion solo para evaluacion
+        self.perception = perception
+        self.radar_stats = {}   #contadores por tick para el log de percepcion
+        self.CARLA = CarlaControler(num_vehicles=num_vehicles, num_walkers=num_walkers,
+                                    enable_radar=(perception != "ground_truth"))
 
 
         self.current_step = 0
@@ -305,7 +310,11 @@ class envCARLA(gym.Env):
             
             vehicle_state = np.nan_to_num(vehicle_state, nan=0.0, posinf=0.0, neginf=0.0)
 
-            radar_features = self._get_vehicle_features(agent, agent_id)
+            if self.perception == "ground_truth":
+                radar_features = self._get_vehicle_features(agent, agent_id)
+            else:
+                radar_features = self._get_radar_features(
+                    agent, agent_id, validate=(self.perception == "radar_validated"))
             self.cam_features[agent_id] = radar_features
 
             vehicle_state = np.clip(vehicle_state, self.low_v, self.high_v)
@@ -431,7 +440,7 @@ class envCARLA(gym.Env):
             if abs(self.lateral_distance[agent_id]) > 4: #muy alejados del carril
                 reward -= 10
 
-            if abs(self.lateral_distance[agent_id]) > 8.0: #si esta muy alejado del carril durante mucho tiempo, paramos el episodio
+            if abs(self.lateral_distance[agent_id]) > 4.0: #si esta muy alejado del carril durante mucho tiempo, paramos el episodio
                 self.offroad_streak[agent_id] = self.offroad_streak.get(agent_id, 0) + 1
             else:
                 self.offroad_streak[agent_id] = 0
@@ -606,6 +615,27 @@ class envCARLA(gym.Env):
     
     
     
+    def _route_offset(self, xy, route_xy, wp_idx, route_win):
+        """Desviacion con signo de un punto respecto a mi ruta.
+        Buscamos que la deteccion por ground truth y la de radar usen
+        exactamente el mismo calculo y si divergen, la comparacion de
+        la percepcion deja de ser valida.."""
+        if route_xy is None:
+            return None
+        lo = max(0, wp_idx - 2)
+        hi = min(len(route_xy), wp_idx + route_win)
+        win = route_xy[lo:hi]
+        if len(win) < 2:
+            return None
+        p = np.asarray(xy, dtype=np.float64)
+        d_wp = np.linalg.norm(win - p, axis=1)
+        k = int(np.argmin(d_wp))
+        tan = win[min(k + 1, len(win) - 1)] - win[max(k - 1, 0)]
+        tan = tan / (np.linalg.norm(tan) + 1e-6)
+        to_v = p - win[k]
+        #misma convencion de normal derecha que lateral_distance
+        return float(-tan[1] * to_v[0] + tan[0] * to_v[1])
+
     def _in_path_weight(self, offset_m):
         """Cuanto nos importa un obstaculo.
         Si va en sentido opuesto no le damos importancia"""
@@ -696,18 +726,9 @@ class envCARLA(gym.Env):
                 continue
 
             if route_xy is not None:
-                lo = max(0, wp_idx - 2)
-                hi = min(len(route_xy), wp_idx + route_win)
-                win = route_xy[lo:hi]
-                if len(win) < 2:
-                    continue
-                #cuanto se desvia de nuestro carril el obstaculo
-                d_wp = np.linalg.norm(win - np.array([v_loc.x, v_loc.y]), axis=1)
-                k = int(np.argmin(d_wp))
-                tan = win[min(k + 1, len(win) - 1)] - win[max(k - 1, 0)]
-                tan = tan / (np.linalg.norm(tan) + 1e-6)
-                to_v = np.array([v_loc.x, v_loc.y]) - win[k]
-                signed_offset = -tan[1] * to_v[0] + tan[0] * to_v[1]
+                signed_offset = self._route_offset((v_loc.x, v_loc.y), route_xy, wp_idx, route_win)
+                if signed_offset is None:
+                    continue  #ventana de ruta con datos no validos
             else:
                 signed_offset = np.dot(direction, right) * dist
 
@@ -786,6 +807,110 @@ class envCARLA(gym.Env):
                 print(f"{agent_id} mantuvo la parada {held_s:.1f}s, NPC released")
             except Exception as e:
                 print(f"[curriculum] no se pudo liberar el NPC de {agent_id}: {e}")
+
+    def _radar_world_points(self, agent):
+        """Pasa cada deteccion (depth, azimuth, altitude) del sensor a
+        coordenadas mundo."""
+        pack = self.CARLA.radar_data.get(agent.id)
+        if not pack:
+            return []
+        tf = pack['transform']
+        yaw = np.radians(tf.rotation.yaw)
+        pitch = np.radians(tf.rotation.pitch)
+        out = []
+        for det in pack['detections']:
+            az, al, d = det['azimuth'], det['altitude'], det['depth']
+            #direccion del sensor rotada al mundo por yaw/pitch
+            cx = np.cos(al + pitch) * np.cos(az + yaw)
+            cy = np.cos(al + pitch) * np.sin(az + yaw)
+            x = tf.location.x + d * cx
+            y = tf.location.y + d * cy
+            out.append(((x, y), d, det))
+        return out
+
+    def _cluster_radar(self, points, radius=2.5):
+        """Agrupacion por cercania, quedandonos con el punto mas cercano ya que
+        El radar devuelve muchos puntos por vehiculo y eso haria que solo nos fijasemos
+        en el más cercano."""
+        clusters = []
+        for xy, depth, det in sorted(points, key=lambda t: t[1]):
+            for c in clusters:
+                if (xy[0] - c[0][0]) ** 2 + (xy[1] - c[0][1]) ** 2 < radius ** 2:
+                    c[3] += 1
+                    break
+            else:
+                clusters.append([xy, depth, det, 1])
+        return clusters
+
+    def _match_actor(self, xy, radius=3.0):
+        """Ground truth para ver si ha detectado un NPC o es un muro o similar"""
+        best, best_d = None, radius
+        cands = list(self.CARLA.vehicles_npcs_list) + list(self.__agent)
+        cands += [n for n in self.curriculum_npc.values() if n is not None and n.is_alive]
+        cands += [w for w, _ in self.CARLA.people_list]
+        for a in cands:
+            try:
+                if not a.is_alive:
+                    continue
+                loc = a.get_location()
+            except Exception:
+                continue
+            d = np.hypot(loc.x - xy[0], loc.y - xy[1])
+            if d < best_d:
+                best, best_d = a, d
+        return best
+
+    def _get_radar_features(self, agent, agent_id, validate):
+        """Detectamos peatones y vehiculos NPC delante nuestra para aprender a frenar.
+        Esta vez haciendo uso del radar"""
+        route_xy = self.route_xy.get(agent_id)
+        if route_xy is None or len(route_xy) < 2:
+            route_xy, wp_idx = None, 0
+        else:
+            wp_idx = int(np.clip(self.closest_waypoint_idx.get(agent_id, 0), 0, len(route_xy) - 1))
+        route_win = self.route_window.get(agent_id, 20)
+
+        pts = self._radar_world_points(agent)
+        clusters = self._cluster_radar(pts)
+
+        scored, n_matched = [], 0
+        for xy, depth, det, _n in clusters:
+            actor = self._match_actor(xy)
+            if actor is not None:
+                n_matched += 1
+            elif validate:
+                continue  #solo el radar no distingue un muro de un coche parado
+
+            if route_xy is not None:
+                signed = self._route_offset(xy, route_xy, wp_idx, route_win)
+                if signed is None:
+                    continue
+            else:
+                continue
+            if not np.isfinite(signed):
+                continue
+            in_path = self._in_path_weight(signed)
+            if in_path <= 0.0:
+                continue
+
+            proximity = float(np.clip(1.0 - depth / self.radar_range, 0.0, 1.0))
+            bearing = float(np.clip(signed / self.lane_width, -1.0, 1.0))
+            #el radar da velocidad radial: negativa al acercarse
+            closing_rate = float(np.clip(-det['velocity'] / self.max_speed, -1.0, 1.0))
+            scored.append((proximity * in_path, proximity, bearing, closing_rate))
+
+        self.radar_stats[agent_id] = {
+            'n_detections': len(pts), 'n_clusters': len(clusters),
+            'n_matched': n_matched, 'n_used': len(scored),
+        }
+
+        features = np.zeros(6, dtype=np.float32)
+        scored.sort(key=lambda x: x[0], reverse=True)
+        if len(scored) >= 1:
+            _, features[0], features[1], features[2] = scored[0]
+        if len(scored) >= 2:
+            _, features[3], features[4], features[5] = scored[1]
+        return self._smooth_radar(agent_id, features)
 
     def _apply_collision_curriculum(self, agent_id, from_idx=0, force=False):
         """Colocamos un obstaculo por delante del agente para que aprenda a frenar."""

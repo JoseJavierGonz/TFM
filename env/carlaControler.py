@@ -12,13 +12,15 @@ from agents.navigation.global_route_planner import GlobalRoutePlanner
 
 class CarlaControler():
     """Clase para conectarse al servidor de carla, setear peatones, mapa, coches, condiciones meteorológicas, spawnear sensores y demás"""
-    def __init__(self, num_vehicles=20, num_walkers=20):
+    def __init__(self, num_vehicles=20, num_walkers=20, enable_radar=False):
 
         self.client = None
         self.world = None
         self.sensors = {}
         self.sensors_data = {}
         self.radar_queues = {}
+        self.enable_radar = enable_radar
+        self.radar_data = {}
         self.vehicles_npcs_list = []
         self.vehicles_marl_list = []
         self.people_list = []
@@ -258,20 +260,72 @@ class CarlaControler():
 
         if actor_id in self.sensors:
             print(f"{actor_id} saved previously")
-        else:
-            self.sensors[actor_id] = {'collision': collision_sensor}
-            collision_sensor.listen(lambda data, v=actor_id: self.__on_collision(v, data))
+            return
+
+        self.sensors[actor_id] = {'collision': collision_sensor}
+        collision_sensor.listen(lambda data, v=actor_id: self.__on_collision(v, data))
+
+        if not self.enable_radar:
+            return
+        #spawneamos el radar
+        radar_bp = blueprint_librariy.find('sensor.other.radar')
+        radar_bp.set_attribute('horizontal_fov', '60')
+        radar_bp.set_attribute('vertical_fov', '20')
+        radar_bp.set_attribute('range', '30')
+        radar_bp.set_attribute('points_per_second', '2000')
+        radar_bp.set_attribute('sensor_tick', str(self.fixed_delta_seconds))
+        radar_tf = carla.Transform(carla.Location(x=2.2, z=0.8), carla.Rotation(pitch=0.0))
+        radar_sensor = self.world.spawn_actor(radar_bp, radar_tf, attach_to=actor)
+
+        self.sensors[actor_id]['radar'] = radar_sensor
+        self.radar_queues[actor_id] = Queue(maxsize=4)
+        radar_sensor.listen(lambda data, v=actor_id: self.__radar_callback(data, v))
 
     
     def get_map(self):
         """Getter del mapa de CARLA"""
         return self.world.get_map()
     
+    def __radar_callback(self, radar_data, actor_id):
+        if getattr(self, "closing", False):
+            return
+        q = self.radar_queues.get(actor_id)
+        if q is None:
+            return
+        if q.full():
+            try:
+                q.get_nowait()
+            except Empty:
+                pass
+        try:
+            q.put_nowait(radar_data)
+        except Full:
+            pass
+
     def tick(self):
         """Tick de la simuladion."""
         if getattr(self, "closing", False):
             return
         self.world.tick()
+        if not self.enable_radar:
+            return
+        #nos quedamos con la ultima medida de cada radar
+        for actor_id, q in self.radar_queues.items():
+            latest = None
+            while not q.empty():
+                try:
+                    latest = q.get_nowait()
+                except Empty:
+                    break
+            if latest is None:
+                continue
+            #se guarda el transform del sensor
+            self.radar_data[actor_id] = {
+                'transform': latest.transform,
+                'detections': [{'depth': d.depth, 'azimuth': d.azimuth,
+                                'altitude': d.altitude, 'velocity': d.velocity}
+                               for d in latest],
+            }
     
 
     def __on_collision(self, vehicle_id, measure):

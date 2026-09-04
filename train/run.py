@@ -21,7 +21,7 @@ from pynput import keyboard
 
 from env.gymCARLA import envCARLA
 from models.networks import Actor_network
-from train.metrics_io import (RESULTS_DIR, EVAL_FIELDS, AppendCSV,
+from train.metrics_io import (RESULTS_DIR, EVAL_FIELDS, RADAR_FIELDS, AppendCSV,
                               append_run_metadata, new_run_id, timestamp)
 
 
@@ -48,6 +48,13 @@ def parse_args():
     p.add_argument("--curriculum-prob", type=float, default=0.0,
                    help="0 en evaluacion: el curriculum es una ayuda de entrenamiento")
     p.add_argument("--csv", default=None, help="CSV append-only (por defecto results/eval_episodes.csv)")
+    p.add_argument("--perception", default="ground_truth",
+                   choices=["ground_truth", "radar_validated", "radar_raw"],
+                   help="De donde salen las 6 features. Misma politica en los tres casos")
+    p.add_argument("--radar-log", default=None,
+                   help="CSV de detecciones de radar (por defecto results/radar_detections.csv)")
+    p.add_argument("--radar-sample", type=int, default=20,
+                   help="Detalle por deteccion 1 de cada N ticks (evita millones de filas)")
     return p.parse_args()
 
 
@@ -82,7 +89,31 @@ def select_action(actor, state, cam_state, stochastic):
     return torch.cat([throttle, steer], dim=1)
 
 
-def run_episode(env, actors, agent_ids, device, max_steps, stochastic, follow):
+def _log_radar(log, ctx, env, agent_ids, step, sample_every):
+    """Una fila por tick, y una deteccion 1 de cada N ticks.
+    Se busca muestreara par evitar millones de filas por escenario."""
+    detail = (step % sample_every == 0)
+    for idx, aid in enumerate(agent_ids):
+        st = env.radar_stats.get(aid)
+        if not st:
+            continue
+        base = dict(ctx, episode=ctx["episode"], step=step, agent_id=aid,
+                    timestamp=timestamp())
+        log.write(dict(base, row_type="tick", **st))
+        if not detail:
+            continue
+        agent = env.CARLA.vehicles_marl_list[idx]
+        for xy, depth, det, _n in env._cluster_radar(env._radar_world_points(agent)):
+            actor = env._match_actor(xy)
+            log.write(dict(base, row_type="detection",
+                           depth=depth, azimuth=det["azimuth"],
+                           altitude=det["altitude"], velocity=det["velocity"],
+                           matched=actor is not None,
+                           matched_type=(actor.type_id if actor is not None else "static")))
+
+
+def run_episode(env, actors, agent_ids, device, max_steps, stochastic, follow,
+                radar_log=None, radar_ctx=None, radar_sample=20):
     obs = env.reset()
     reward_sum = {aid: 0.0 for aid in agent_ids}
     steps_alive = {aid: 0 for aid in agent_ids}
@@ -111,6 +142,9 @@ def run_episode(env, actors, agent_ids, device, max_steps, stochastic, follow):
 
         obs, rewards, dones, info = env.step(actions_list)
 
+        if radar_log is not None:
+            _log_radar(radar_log, radar_ctx, env, agent_ids, step, radar_sample)
+
         for idx, agent_id in enumerate(agent_ids):
             if finished[agent_id]:
                 continue
@@ -120,12 +154,15 @@ def run_episode(env, actors, agent_ids, device, max_steps, stochastic, follow):
             extra[agent_id]["vel_sum"] += v
             extra[agent_id]["vel_n"] += 1
             extra[agent_id]["max_velocity"] = max(extra[agent_id]["max_velocity"], v)
+
+            
+            extra[agent_id]["dist_to_goal_final"] = info["dist_to_goal"].get(agent_id, 0.0)
+            extra[agent_id]["route_completion"] = info["route_completion"].get(agent_id, 0.0)
+            extra[agent_id]["initial_dist"] = info["initial_dist"].get(agent_id, 0.0)
+
             if dones[agent_id]:
                 finished[agent_id] = True
                 outcome[agent_id] = info["termination"].get(agent_id) or "timeout"
-                extra[agent_id]["dist_to_goal_final"] = info["dist_to_goal"].get(agent_id, 0.0)
-                extra[agent_id]["route_completion"] = info["route_completion"].get(agent_id, 0.0)
-                extra[agent_id]["initial_dist"] = info["initial_dist"].get(agent_id, 0.0)
 
         if all(finished.values()):
             break
@@ -140,19 +177,24 @@ def main():
     actors = load_actors(args.checkpoint, args.num_agents, args.space_obs, args.space_act, device)
 
     env = envCARLA(num_vehicles=args.npcs, num_walkers=args.walkers,
-                   curriculum_prob=args.curriculum_prob)
+                   curriculum_prob=args.curriculum_prob, perception=args.perception)
     agent_ids = env.agent_id
 
     run_id = new_run_id(f"eval_{args.scenario}")
     scenario_cfg = {"n_npcs": args.npcs, "n_walkers": args.walkers,
                     "curriculum_prob": args.curriculum_prob,
-                    "deterministic": not args.stochastic}
+                    "deterministic": not args.stochastic,
+                    "perception": args.perception}
     append_run_metadata({"run_id": run_id, "timestamp": timestamp(), "mode": "eval",
                          "scenario": args.scenario, "checkpoint": args.checkpoint,
                          "episodes": args.episodes, "max_steps": args.max_steps,
                          **scenario_cfg})
     csv_log = AppendCSV(args.csv or os.path.join(RESULTS_DIR, "eval_episodes.csv"),
                         EVAL_FIELDS)
+    radar_log = None
+    if args.perception != "ground_truth":
+        radar_log = AppendCSV(args.radar_log or os.path.join(RESULTS_DIR, "radar_detections.csv"),
+                              RADAR_FIELDS)
 
     listener = None
     if args.follow:
@@ -163,8 +205,11 @@ def main():
 
     try:
         for ep in range(args.episodes):
+            radar_ctx = {"run_id": run_id, "scenario": args.scenario,
+                         "perception": args.perception, "episode": ep}
             reward_sum, steps_alive, outcome, extra = run_episode(
-                env, actors, agent_ids, device, args.max_steps, args.stochastic, args.follow
+                env, actors, agent_ids, device, args.max_steps, args.stochastic, args.follow,
+                radar_log=radar_log, radar_ctx=radar_ctx, radar_sample=args.radar_sample
             )
             summary = " | ".join(
                 f"{aid}: {outcome[aid]:<9} reward={reward_sum[aid]:7.2f} steps={steps_alive[aid]}"
@@ -195,6 +240,8 @@ def main():
         if listener is not None:
             listener.stop()
         csv_log.close()
+        if radar_log is not None:
+            radar_log.close()
         env.close()
 
     print(f"\n=== Summary over {args.episodes} episodes ===")

@@ -84,10 +84,17 @@ TRAIN_FIELDS = [
     "n_npcs", "n_walkers", "curriculum_prob", "rollout_steps",
 ]
 
+RADAR_FIELDS = [
+    "run_id", "timestamp", "scenario", "perception", "episode", "step", "agent_id",
+    "row_type",                     
+    "n_detections", "n_clusters", "n_matched", "n_used",
+    "depth", "azimuth", "altitude", "velocity", "matched", "matched_type",
+]
+
 EVAL_FIELDS = [
     "run_id", "timestamp", "scenario", "checkpoint", "episode", "agent_id",
     "outcome", "reward", "steps_alive",
     "mean_velocity", "max_velocity", "dist_to_goal_final",
     "route_completion", "initial_dist",
-    "n_npcs", "n_walkers", "curriculum_prob", "deterministic",
+    "n_npcs", "n_walkers", "curriculum_prob", "deterministic", "perception",
 ]
