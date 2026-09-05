@@ -1,0 +1,4 @@
+percepcion,n,% meta,% colision,% fuera de ruta,% timeout,recompensa,vel media,vel max,ruta,steps,d % meta,d % colision,d ruta
+ground truth,60,23.3,75.0,1.7,0.0,2467.0,8.19,12.45,0.56,552,0.0,0.0,0.0
+radar validado,60,33.3,63.3,0.0,3.3,2763.0,7.49,12.97,0.619,745,10.0,-11.7,0.059
+radar crudo,60,0.0,10.0,3.3,86.7,967.0,0.67,2.94,0.136,1878,-23.3,-65.0,-0.424

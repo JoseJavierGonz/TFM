@@ -1,2 +1,4 @@
 CARLA_0.9.14/
 */__pycache__/
+__pycache__/
+*.pyc

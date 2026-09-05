@@ -1,0 +1,4 @@
+comparacion,n actor real,n estatico,AUC vel. radial,solapamiento,media vel. actor,media vel. estatico
+actor real vs estatico,6265,141460,0.531,0.807,2.659,2.496
+vehiculo vs estatico,6183,141460,0.532,0.804,2.667,2.496
+peaton vs estatico,82,141460,0.503,0.799,2.042,2.496

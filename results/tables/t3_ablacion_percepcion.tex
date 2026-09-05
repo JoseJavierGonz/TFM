@@ -1,0 +1,14 @@
+\begin{table}[htbp]
+  \centering
+  \begin{tabular}{lrrrrrrrrrrrrr}
+    \toprule
+    percepcion & n & \% meta & \% colision & \% fuera de ruta & \% timeout & recompensa & vel media & vel max & ruta & steps & d \% meta & d \% colision & d ruta \\
+    \midrule
+    ground truth & 60 & 23.3 & 75 & 1.7 & 0 & 2467 & 8.19 & 12.45 & 0.56 & 552 & 0 & 0 & 0 \\
+    radar validado & 60 & 33.3 & 63.3 & 0 & 3.3 & 2763 & 7.49 & 12.97 & 0.619 & 745 & 10 & -11.7 & 0.059 \\
+    radar crudo & 60 & 0 & 10 & 3.3 & 86.7 & 967 & 0.67 & 2.94 & 0.136 & 1878 & -23.3 & -65 & -0.424 \\
+    \bottomrule
+  \end{tabular}
+  \caption{Ablacion del stack de percepcion en el escenario 'traffic'. La politica y los pesos son identicos en las tres filas: solo cambia el origen de las features. Las columnas 'd' son la diferencia frente a ground truth.}
+  \label{tab:ablacion_percepcion}
+\end{table}

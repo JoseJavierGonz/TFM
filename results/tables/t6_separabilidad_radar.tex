@@ -1,0 +1,14 @@
+\begin{table}[htbp]
+  \centering
+  \begin{tabular}{lrrrrrr}
+    \toprule
+    comparacion & n actor real & n estatico & AUC vel. radial & solapamiento & media vel. actor & media vel. estatico \\
+    \midrule
+    actor real vs estatico & 6265 & 141460 & 0.531 & 0.807 & 2.659 & 2.496 \\
+    vehiculo vs estatico & 6183 & 141460 & 0.532 & 0.804 & 2.667 & 2.496 \\
+    peaton vs estatico & 82 & 141460 & 0.503 & 0.799 & 2.042 & 2.496 \\
+    \bottomrule
+  \end{tabular}
+  \caption{Capacidad de un clasificador que solo disponga de la velocidad radial para distinguir actores reales de entorno estatico. AUC 0.5 significa indistinguibles; solapamiento 1.0 significa distribuciones identicas.}
+  \label{tab:separabilidad_radar}
+\end{table}

@@ -1,18 +1,3 @@
-"""Figuras y tablas de evaluacion, a partir de results/eval_episodes.csv y
-results/radar_detections.csv.
-
-    python -m analysis.report_eval
-    python -m analysis.report_eval --results-dir /ruta/copiada/del/contenedor
-
-A diferencia del entrenamiento, aqui cada fila es UN episodio con UN desenlace
-(meta / colision / fuera de ruta / timeout) y acciones deterministas: sin el ruido
-de exploracion, estas son las cifras que van al capitulo de resultados.
-
-La figura clave es F9: si la velocidad radial de las detecciones de vehiculo y las
-de entorno estatico se solapan, ningun clasificador puede separarlas con lo que el
-radar entrega, que es el argumento central de la memoria. Se acompana del AUC de un
-clasificador que solo pueda usar |velocity| para ponerle un numero.
-"""
 import argparse
 import os
 
@@ -52,7 +37,18 @@ def summarize(g):
 
 
 def table_main(df, tab_dir):
+    """T2: comparacion ENTRE ESCENARIOS. Se restringe a ground_truth."""
     print("\nT2: resultados principales")
+    if "perception" in df.columns:
+        n_all = len(df)
+        df = df[df["perception"] == "ground_truth"]
+        if len(df) < n_all:
+            print(f"  [nota]   se excluyen {n_all - len(df)} filas de condiciones "
+                  "de radar; la comparacion de percepcion es la tabla T3")
+    if df.empty:
+        print("T2: no hay filas con perception=ground_truth")
+        return None
+
     rows = []
     for (sc, aid), g in df.groupby(["scenario", "agent_id"]):
         rows.append(dict(escenario=sc, agente=aid, **summarize(g)))
@@ -108,7 +104,7 @@ def table_checkpoints(df, tab_dir):
     """T5: comparativa entre checkpoints, para evaluar en dos
     puntos del entrenamiento."""
     if "checkpoint" not in df.columns or df["checkpoint"].nunique() < 2:
-        print("\n  [salto]  T5: solo hay un checkpoint evaluado")
+        print("\nT5: solo hay un checkpoint evaluado")
         return None
     print("\nT5: comparativa entre checkpoints ")
     rows = []
@@ -187,7 +183,7 @@ def table_funnel(rad, tab_dir):
     """T4: el embudo. Cuanto comprime el clustering y cuanto descarta la validacion."""
     ticks = rad[rad["row_type"] == "tick"]
     if ticks.empty:
-        print("\n  [salto]  T4: no hay filas row_type=tick")
+        print("\nT4: no hay filas row_type=tick")
         return None
     print("\n--- T4: embudo de deteccion ---")
     rows = []
@@ -213,18 +209,18 @@ def table_funnel(rad, tab_dir):
 
 
 def fig_velocity_separability(rad, fig_dir, tab_dir):
-    """F9. LA figura: si vehiculos y estaticos se solapan en velocidad radial,
+    """F9: si vehiculos y estaticos se solapan en velocidad radial,
     ningun umbral sobre esa magnitud los separa."""
     det = rad[rad["row_type"] == "detection"].copy()
     if det.empty or "velocity" not in det.columns:
-        print("\n  [salto]  F9: no hay filas row_type=detection")
+        print("\nF9: no hay filas row_type=detection")
         return None
 
     det["categoria"] = det["matched_type"].apply(_category)
     det["velocity"] = pd.to_numeric(det["velocity"], errors="coerce")
     det = det[np.isfinite(det["velocity"])]
     if det.empty:
-        print("\n  [salto]  F9: ninguna velocidad valida")
+        print("\nF9: ninguna velocidad valida")
         return None
 
     print("\n F9: separabilidad por velocidad radial")
@@ -260,6 +256,33 @@ def fig_velocity_separability(rad, fig_dir, tab_dir):
         a2.set_title(f"F9b. AUC = {auc:.3f}   solapamiento = {ov:.2f}")
         a2.legend()
     save_fig(fig, "f9_velocidad_separabilidad", fig_dir)
+
+    if "perception" in det.columns and det["perception"].nunique() > 1:
+        cond_rows = []
+        for p, S in det.groupby("perception"):
+            a = S[S["categoria"].isin(["vehiculo", "peaton"])]["velocity"].abs()
+            e = S[S["categoria"] == "estatico"]["velocity"].abs()
+            if len(a) < 20 or len(e) < 20:
+                continue
+            cond_rows.append({"condicion": PERCEPTION_ES.get(p, p),
+                              "n actor real": len(a), "n estatico": len(e),
+                              "AUC vel. radial": round(auc_from_scores(a, e), 3),
+                              "solapamiento": round(overlap_coefficient(a, e), 3),
+                              "media vel. actor": round(float(a.mean()), 3),
+                              "media vel. estatico": round(float(e.mean()), 3)})
+        if len(cond_rows) > 1:
+            aucs = [r["AUC vel. radial"] for r in cond_rows]
+            if min(aucs) < 0.5 < max(aucs):
+                print("las condiciones tienen AUC a lados opuestos de 0.5: "
+                      "el valor agregado se cancela y NO debe reportarse")
+            write_table(
+                pd.DataFrame(cond_rows), "t7_separabilidad_por_condicion", tab_dir,
+                caption=("Separabilidad por velocidad radial calculada de forma "
+                         "independiente en cada condicion. La velocidad radial de un "
+                         "objeto estatico coincide con la del propio vehiculo, muy "
+                         "distinta entre condiciones, por lo que agregar ambas "
+                         "poblaciones cancela sus sesgos y produce un valor espurio."),
+                label="separabilidad_por_condicion")
 
     rows = [{"comparacion": "actor real vs estatico",
              "n actor real": len(dyn), "n estatico": len(sta),
@@ -334,7 +357,7 @@ def main():
         ev = report_runs(ev, ["scenario", "perception", "checkpoint"], args.latest)
         n_to = int((ev["outcome"] == "timeout").sum())
         if n_to and float(ev.loc[ev["outcome"] == "timeout", "route_completion"].max()) == 0.0:
-            print(f"  [aviso]  los {n_to} episodios en timeout tienen "
+            print(f"los {n_to} episodios en timeout tienen "
                   "route_completion=0: el arreglo de run.py no estaba aplicado "
                   "cuando se generaron; su ruta real no se midio")
 

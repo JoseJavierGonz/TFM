@@ -101,6 +101,7 @@ def window_table(df, tab_dir, size):
         rate, cl, ch = poisson_ci(goles, n)
         ok = g[~artifact_mask(g)]
         rows.append({
+            "_orden": win,         
             "ventana": f"ep{a}-{b}",
             "agente": aid,
             "n": n,
@@ -113,7 +114,8 @@ def window_table(df, tab_dir, size):
             "% ruta>0.30": round(100.0 * float((ok["route_completion"] > 0.30).mean()), 0) if len(ok) else float("nan"),
             "n ruta": len(ok),
         })
-    out = pd.DataFrame(rows).sort_values(["agente", "ventana"])
+    out = (pd.DataFrame(rows).sort_values(["agente", "_orden"])
+                             .drop(columns=["_orden"]))
     return write_table(
         out, "t1_entrenamiento_por_ventanas", tab_dir,
         caption=(f"Evolucion del entrenamiento en ventanas de {size} episodios. "
