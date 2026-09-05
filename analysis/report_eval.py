@@ -120,18 +120,17 @@ def table_checkpoints(df, tab_dir):
         label="comparativa_checkpoints")
 
 
-def fig_outcomes(df, fig_dir):
-    """F7: en que acaban los episodios, por condicion."""
-    print("\nFiguras de evaluacion")
+def fig_outcomes(df, fig_dir, key, name, title, order=None):
+    """Desenlaces por condicion. `key` es la columna que define la comparacion:
+    'scenario' para comparar escenarios (con una sola percepcion) y 'perception'
+    para la ablacion (dentro de un solo escenario). Mezclar ambas en una figura
+    juntaria poblaciones distintas en la misma barra."""
     df = df.copy()
-    if "perception" in df.columns:
-        df["_cond"] = df.apply(
-            lambda r: r["scenario"] if r.get("perception") == "ground_truth"
-            else f"{r['scenario']}\n{PERCEPTION_ES.get(r.get('perception'), '')}", axis=1)
-    else:
-        df["_cond"] = df["scenario"]
+    df["_cond"] = (df[key].map(PERCEPTION_ES).fillna(df[key])
+                   if key == "perception" else df[key])
 
-    conds = sorted(df["_cond"].unique())
+    conds = [c for c in order if c in set(df["_cond"])] if order \
+        else sorted(df["_cond"].unique())
     fig, ax = plt.subplots(figsize=(max(7, 1.9 * len(conds)), 4.5))
     bottom = np.zeros(len(conds))
     palette = {"goal": "#2ca02c", "collision": "#d62728",
@@ -143,18 +142,19 @@ def fig_outcomes(df, fig_dir):
         bottom += vals
     ax.set_ylabel("% de episodios")
     ax.set_ylim(0, 100)
-    ax.set_title("F7. Desenlace de los episodios por condicion")
+    ax.set_title(title)
     ax.legend(ncol=4, loc="upper center", bbox_to_anchor=(0.5, -0.12))
-    save_fig(fig, "f7_desenlaces", fig_dir)
+    save_fig(fig, name, fig_dir)
 
 
-def fig_route_ecdf(df, fig_dir):
-    """F8: porcentaje de ruta completada por episodios. Muestra la distribucion."""
+def fig_route_ecdf(df, fig_dir, key, name, title, order=None):
+    """Distribucion acumulada de ruta completada. Mismo criterio que fig_outcomes:
+    `key` fija que compara la figura, para no mezclar escenarios con percepciones."""
     fig, ax = plt.subplots()
-    key = "perception" if ("perception" in df.columns
-                           and df["perception"].nunique() > 1) else "scenario"
-    for val, g in df.groupby(key):
-        x = np.sort(g["route_completion"].dropna().to_numpy())
+    vals = [v for v in order if v in set(df[key])] if order \
+        else sorted(df[key].unique())
+    for val in vals:
+        x = np.sort(df.loc[df[key] == val, "route_completion"].dropna().to_numpy())
         if len(x) == 0:
             continue
         y = np.arange(1, len(x) + 1) / len(x)
@@ -165,9 +165,9 @@ def fig_route_ecdf(df, fig_dir):
     ax.set_ylabel("Fraccion acumulada de episodios")
     ax.set_xlim(0, 1)
     ax.set_ylim(0, 1)
-    ax.set_title("F8. Distribucion de ruta completada")
+    ax.set_title(title)
     ax.legend()
-    save_fig(fig, "f8_ruta_ecdf", fig_dir)
+    save_fig(fig, name, fig_dir)
 
 
 def _category(type_id):
@@ -379,8 +379,31 @@ def main():
         table_main(ev, tab_dir)
         table_perception(ev, tab_dir, args.ablation_scenario)
         table_checkpoints(ev, tab_dir)
-        fig_outcomes(ev, fig_dir)
-        fig_route_ecdf(ev, fig_dir)
+        print("\nFiguras de evaluacion")
+        PERC_ORDER = ["ground_truth", "radar_validated", "radar_raw"]
+
+        #comparacion ENTRE ESCENARIOS: una sola percepcion, para no mezclar
+        base = ev[ev["perception"] == "ground_truth"]
+        if base["scenario"].nunique() > 1:
+            fig_outcomes(base, fig_dir, "scenario", "f7a_desenlaces_escenario",
+                         "F7a. Desenlace por escenario (percepcion de referencia)")
+            fig_route_ecdf(base, fig_dir, "scenario", "f8a_ruta_escenario",
+                           "F8a. Ruta completada por escenario (percepcion de referencia)")
+        else:
+            print("  [salto]  F7a/F8a: hace falta mas de un escenario con ground truth")
+
+        #ablacion de PERCEPCION: un solo escenario, las tres condiciones
+        abl = ev[ev["scenario"] == args.ablation_scenario]
+        if abl["perception"].nunique() > 1:
+            fig_outcomes(abl, fig_dir, "perception", "f7b_desenlaces_percepcion",
+                         f"F7b. Desenlace por percepcion (escenario '{args.ablation_scenario}')",
+                         order=PERC_ORDER)
+            fig_route_ecdf(abl, fig_dir, "perception", "f8b_ruta_percepcion",
+                           f"F8b. Ruta completada por percepcion (escenario '{args.ablation_scenario}')",
+                           order=PERC_ORDER)
+        else:
+            print(f"  [salto]  F7b/F8b: hace falta mas de una percepcion en "
+                  f"scenario={args.ablation_scenario}")
     else:
         print("\nSin datos de evaluacion: se salta el informe de evaluacion.")
 
