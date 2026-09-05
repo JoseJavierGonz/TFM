@@ -1,15 +1,15 @@
-#!/bin/bash
-RenderOffScreen=$@
-if [[ "$RenderOffScreen" == "True" ]]; then
-	./CARLA_0.9.14/CarlaUE4.sh \
-		-quality-level=Low \
-		-windowed \
-		-RenderOffScreen \
-        	-ResX=600 -ResY=400 
+#!/usr/bin/env bash
 
-else
-	./CARLA_0.9.14/CarlaUE4.sh \
-                -quality-level=Low \
-                -windowed \
-                -ResX=600 -ResY=400
-fi
+SCRIPT="train/train_custom.py"
+INTERVAL=5
+
+
+while true; do
+    if pgrep -f "python3 $SCRIPT" > /dev/null; then
+        echo "OK"
+    else
+        echo "caido, lanzando"
+        python3 "$SCRIPT" 
+    fi
+    sleep "$INTERVAL"
+done

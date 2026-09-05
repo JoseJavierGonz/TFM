@@ -1,0 +1,17 @@
+\begin{table}[htbp]
+  \centering
+  \begin{tabular}{lrrrrrrrrrrr}
+    \toprule
+    escenario & agente & n & \% meta & \% colision & \% fuera de ruta & \% timeout & recompensa & vel media & vel max & ruta & steps \\
+    \midrule
+    no\_traffic & agent\_0 & 30 & 43.3 & 53.3 & 3.3 & 0 & 1948 & 11.92 & 18.03 & 0.848 & 514 \\
+    no\_traffic & agent\_1 & 30 & 60 & 40 & 0 & 0 & 3157 & 9.86 & 11.89 & 0.829 & 598 \\
+    no\_traffic & ambos & 60 & 51.7 & 46.7 & 1.7 & 0 & 2552 & 10.89 & 14.96 & 0.839 & 556 \\
+    traffic & agent\_0 & 30 & 16.7 & 80 & 3.3 & 0 & 1403 & 8.83 & 14.13 & 0.455 & 390 \\
+    traffic & agent\_1 & 30 & 30 & 70 & 0 & 0 & 3531 & 7.55 & 10.77 & 0.666 & 715 \\
+    traffic & ambos & 60 & 23.3 & 75 & 1.7 & 0 & 2467 & 8.19 & 12.45 & 0.56 & 552 \\
+    \bottomrule
+  \end{tabular}
+  \caption{Resultados de evaluacion por escenario y agente, con acciones deterministas (media de la gaussiana). Cada episodio aporta un unico desenlace.}
+  \label{tab:eval_principal}
+\end{table}

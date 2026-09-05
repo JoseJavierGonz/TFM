@@ -1,0 +1,31 @@
+\begin{table}[htbp]
+  \centering
+  \begin{tabular}{lrrrrrrrrrr}
+    \toprule
+    ventana & agente & n & goles & goles/ep & IC95 & colisiones & velocidad & ruta media & \% ruta>0.30 & n ruta \\
+    \midrule
+    ep0-49 & agent\_0 & 50 & 0 & 0 & [0.00, 0.00] & 4.4 & 2.24 & 0.175 & 18 & 49 \\
+    ep50-96 & agent\_0 & 50 & 0 & 0 & [0.00, 0.00] & 10.1 & 3.22 & 0.174 & 17 & 47 \\
+    ep97-146 & agent\_0 & 50 & 6 & 0.12 & [0.02, 0.22] & 12.9 & 4.82 & 0.329 & 44 & 50 \\
+    ep147-196 & agent\_0 & 50 & 2 & 0.04 & [0.00, 0.10] & 13.1 & 4.1 & 0.206 & 20 & 49 \\
+    ep197-246 & agent\_0 & 50 & 3 & 0.06 & [0.00, 0.13] & 10.2 & 3.41 & 0.241 & 30 & 50 \\
+    ep247-296 & agent\_0 & 50 & 3 & 0.06 & [0.00, 0.13] & 9.6 & 3.25 & 0.197 & 17 & 48 \\
+    ep297-346 & agent\_0 & 50 & 5 & 0.1 & [0.01, 0.19] & 12.6 & 4.38 & 0.27 & 28 & 50 \\
+    ep347-396 & agent\_0 & 50 & 10 & 0.2 & [0.08, 0.32] & 10.9 & 4.26 & 0.318 & 30 & 50 \\
+    ep397-446 & agent\_0 & 50 & 4 & 0.08 & [0.00, 0.16] & 9.9 & 3.65 & 0.25 & 25 & 48 \\
+    ep447-465 & agent\_0 & 20 & 1 & 0.05 & [0.00, 0.15] & 5.5 & 3.87 & 0.319 & 32 & 19 \\
+    ep0-49 & agent\_1 & 50 & 0 & 0 & [0.00, 0.00] & 7.4 & 3.22 & 0.185 & 20 & 50 \\
+    ep50-96 & agent\_1 & 50 & 3 & 0.06 & [0.00, 0.13] & 12 & 4.16 & 0.3 & 37 & 49 \\
+    ep97-146 & agent\_1 & 50 & 6 & 0.12 & [0.02, 0.22] & 11.5 & 4.23 & 0.287 & 29 & 49 \\
+    ep147-196 & agent\_1 & 50 & 5 & 0.1 & [0.01, 0.19] & 10.6 & 3.69 & 0.25 & 22 & 50 \\
+    ep197-246 & agent\_1 & 50 & 9 & 0.18 & [0.06, 0.30] & 5.9 & 3.53 & 0.37 & 37 & 46 \\
+    ep247-296 & agent\_1 & 50 & 9 & 0.18 & [0.06, 0.30] & 7.9 & 3.32 & 0.276 & 30 & 46 \\
+    ep297-346 & agent\_1 & 50 & 15 & 0.3 & [0.15, 0.45] & 6.5 & 4.2 & 0.373 & 38 & 50 \\
+    ep347-396 & agent\_1 & 50 & 6 & 0.12 & [0.02, 0.22] & 5.9 & 2.74 & 0.226 & 20 & 49 \\
+    ep397-446 & agent\_1 & 50 & 16 & 0.32 & [0.16, 0.48] & 5.1 & 3.94 & 0.411 & 42 & 48 \\
+    ep447-465 & agent\_1 & 20 & 6 & 0.3 & [0.06, 0.54] & 4.7 & 3.55 & 0.449 & 40 & 20 \\
+    \bottomrule
+  \end{tabular}
+  \caption{Evolucion del entrenamiento en ventanas de 50 episodios. Un episodio son 2048 steps con respawn tras cada muerte, por lo que 'colisiones' cuenta muertes por rollout. El IC95 de las llegadas a meta es de Poisson: con pocos sucesos las diferencias aparentes suelen ser ruido.}
+  \label{tab:entrenamiento_ventanas}
+\end{table}
