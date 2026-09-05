@@ -338,6 +338,11 @@ def fig_depth(rad, fig_dir):
 def main():
     p = argparse.ArgumentParser(description="Informe de evaluacion para la memoria")
     add_common_args(p)
+    p.add_argument("--exclude-scenario", nargs="*",
+                   default=["smoke", "timing", "video", "test", "debug"],
+                   help="Escenarios de diagnostico que no forman parte de los "
+                        "resultados. Pasa --exclude-scenario sin valores para no "
+                        "descartar ninguno")
     p.add_argument("--ablation-scenario", default="traffic",
                    help="Escenario donde se compara la percepcion (por defecto traffic)")
     args = p.parse_args()
@@ -350,6 +355,16 @@ def main():
                   needed=EVAL_NEEDED, label="eval_episodes.csv")
     rad = load_csv(os.path.join(args.results_dir, "radar_detections.csv"),
                    needed=["row_type", "perception"], label="radar_detections.csv")
+
+    #fuera las tiradas de diagnostico, antes de calcular nada
+    for name, df in (("eval_episodes.csv", ev), ("radar_detections.csv", rad)):
+        if df is None or not args.exclude_scenario or "scenario" not in df.columns:
+            continue
+        drop = df["scenario"].isin(args.exclude_scenario)
+        if drop.any():
+            for sc, n in df.loc[drop, "scenario"].value_counts().items():
+                print(f"  [excl]   {name}: se descartan {n} filas de scenario={sc}")
+            df.drop(df.index[drop], inplace=True)
 
     if ev is not None:
         if "perception" not in ev.columns:
